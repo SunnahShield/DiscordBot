@@ -92,6 +92,26 @@ const PUNISHMENTS = {
   },
 };
 
+const PUNISH_MESSAGES = {
+  grill: (user) => `🔥 **${user} has been sent to the GRILL** 🔥\nيلا ع الشواية`,
+  sgrill: (user) =>
+    `🔥🔥 **${user} has been sent to the SUPER GRILL** 🔥🔥\nيلا ع الشواية البرو ماكس`,
+  jail: (user) => `🚔 **${user} has been JAILED** 🚔\nيلا ع السجن`,
+  naughty: (user) =>
+    `😡 **${user} has been sent to the NAUGHTY CORNER** 😡\nيلا ع النوتي كورنر`,
+  deepfry: (user) => `🍳🔥 **${user} has been DEEP FRIED** 🔥🍳\nيلا ع القلاية`,
+};
+
+const UNDO_MESSAGES = {
+  ungrill: (user) => `🥩❌ **${user} wasn't tasty... removed from the grill**\nمطلعش طعمه حلو`,
+  unsgrill: (user) =>
+    `🔥❌ **${user} survived the SUPER GRILL... barely**\nواضح إنه مش مستوي لسه`,
+  unjail: (user) => `🕊️ **${user} is now FREE**\nتم الافراج عن المتهم`,
+  unnaughty: (user) => `😇 **${user} is now a GOODIEE**\nدلوقتي بقت شطورة`,
+  undeepfry: (user) =>
+    `💀➡️😳 **${user} has been UN-FRIED... bro respawned?!**\nرجع من القلاية بمعجزة 💀🔥`,
+};
+
 const AUTH_LEVELS = [
   { level: 50, roleIds: [ROLE_IDS.admins] },
   { level: 40, roleIds: [ROLE_IDS.seniorMaleMods, ROLE_IDS.seniorFemaleMods] },
@@ -121,19 +141,8 @@ function getActorLevel(member) {
   return 0;
 }
 
-function getGenderLogChannelId(member) {
-  if (member.roles.cache.has(ROLE_IDS.male)) {
-    return CHANNEL_IDS.maleLog;
-  }
-
-  if (
-    member.roles.cache.has(ROLE_IDS.female) ||
-    member.roles.cache.has(ROLE_IDS.femaleNonMuslim)
-  ) {
-    return CHANNEL_IDS.femaleLog;
-  }
-
-  return null;
+function getPunishmentAnnounceChannelId(commandName) {
+  return PUNISHMENTS[commandName]?.announceChannelId ?? null;
 }
 
 function unique(values) {
@@ -258,7 +267,6 @@ async function applyPunishment(interaction, punishmentKey) {
     return;
   }
 
-  const genderLogChannelId = targetMember ? getGenderLogChannelId(targetMember) : null;
   const activePunishment = await getActivePunishment(targetUser.id);
   const removedRoleIdsThisAction = targetMember ? await removeBaseRoles(targetMember) : [];
   const savedRoleIds = activePunishment?.savedRoleIds ?? removedRoleIdsThisAction;
@@ -280,18 +288,12 @@ async function applyPunishment(interaction, punishmentKey) {
     updatedAt: new Date().toISOString(),
   });
 
-  const removedRoleText = formatRoleList(removedRoleIdsThisAction, interaction.guild);
-  const publicMessage = `${punishment.label} applied to ${targetUser}. Reason: ${reason}. Removed roles: ${removedRoleText}.`;
-  const logMessage = `${punishment.label} applied to ${targetUser} by ${interaction.user}. Reason: ${reason}. Removed roles: ${removedRoleText}.`;
+  const publicMessage = PUNISH_MESSAGES[punishmentKey](targetUser);
 
   await sendPunishmentMessages(interaction, publicMessage, [
     {
       channelId: punishment.announceChannelId,
       message: publicMessage,
-    },
-    {
-      channelId: genderLogChannelId,
-      message: logMessage,
     },
   ]);
 }
@@ -334,9 +336,17 @@ async function undoPunishment(interaction, punishmentKey) {
 
   await clearActivePunishment(targetUser.id);
 
+  const publicMessage = UNDO_MESSAGES[`un${punishmentKey}`](targetUser);
+
   await interaction.editReply({
-    content: `${punishment.label} removed from ${targetUser}. Saved roles were restored.`,
+    content: publicMessage,
   });
+
+  await sendChannelMessage(
+    interaction.guild,
+    getPunishmentAnnounceChannelId(punishmentKey),
+    publicMessage
+  );
 }
 
 async function handleDeepfry(interaction) {
@@ -421,8 +431,10 @@ async function handleUndeepfry(interaction) {
   await interaction.guild.bans.remove(targetUser.id).catch(() => null);
   await clearActivePunishment(targetUser.id);
 
+  const publicMessage = UNDO_MESSAGES.undeepfry(targetUser);
+
   await interaction.editReply({
-    content: `${DEEPFRY_LABEL} removed from ${targetUser}. They have been unbanned.`,
+    content: publicMessage,
   });
 }
 
