@@ -13,6 +13,25 @@ const userOption = (builder) =>
     .setDescription('Discord user')
     .setRequired(true);
 
+const reasonOption = (builder) =>
+  builder
+    .setName('reason')
+    .setDescription('Reason for this action')
+    .setRequired(false);
+
+const punishCommand = (name, description) =>
+  new SlashCommandBuilder()
+    .setName(name)
+    .setDescription(description)
+    .addUserOption(userOption)
+    .addStringOption(reasonOption);
+
+const undoCommand = (name, description) =>
+  new SlashCommandBuilder()
+    .setName(name)
+    .setDescription(description)
+    .addUserOption(userOption);
+
 const commands = [
   new SlashCommandBuilder()
     .setName('add')
@@ -37,6 +56,15 @@ const commands = [
     .setDescription('Give your SSP to another user')
     .addUserOption(userOption)
     .addIntegerOption(pointOption),
+
+  punishCommand('grill', 'Apply Grill to a user'),
+  punishCommand('sgrill', 'Apply Super Grill to a user'),
+  punishCommand('jail', 'Apply Jail to a user'),
+  punishCommand('naughty', 'Apply Naughty to a user'),
+  undoCommand('ungrill', 'Remove Grill from a user'),
+  undoCommand('unsgrill', 'Remove Super Grill from a user'),
+  undoCommand('unjail', 'Remove Jail from a user'),
+  undoCommand('unnaughty', 'Remove Naughty from a user'),
 ];
 
 module.exports = {
