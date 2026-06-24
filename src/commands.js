@@ -3,7 +3,7 @@ const { PermissionFlagsBits, SlashCommandBuilder } = require('discord.js');
 const pointOption = (builder) =>
   builder
     .setName('points')
-    .setDescription('Number of Knowledge Point | نقطة معرفة')
+    .setDescription('Number of SSP')
     .setRequired(true)
     .setMinValue(1);
 
@@ -16,25 +16,25 @@ const userOption = (builder) =>
 const commands = [
   new SlashCommandBuilder()
     .setName('add')
-    .setDescription('Add Knowledge Point | نقطة معرفة to a user')
+    .setDescription('Add SSP to a user')
     .addUserOption(userOption)
     .addIntegerOption(pointOption)
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 
   new SlashCommandBuilder()
     .setName('remove')
-    .setDescription('Remove Knowledge Point | نقطة معرفة from a user')
+    .setDescription('Remove SSP from a user')
     .addUserOption(userOption)
     .addIntegerOption(pointOption)
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 
   new SlashCommandBuilder()
     .setName('leaderboard')
-    .setDescription('Show the Knowledge Point | نقطة معرفة leaderboard'),
+    .setDescription('Show the Sunnah Shield Points leaderboard'),
 
   new SlashCommandBuilder()
     .setName('trade')
-    .setDescription('Give your Knowledge Point | نقطة معرفة to another user')
+    .setDescription('Give your SSP to another user')
     .addUserOption(userOption)
     .addIntegerOption(pointOption),
 ];

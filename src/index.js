@@ -25,20 +25,21 @@ const client = new Client({
   intents: [GatewayIntentBits.Guilds],
 });
 
-const POINT_NAME = 'Knowledge Point | نقطة معرفة';
+const POINT_SYMBOL = 'SSP';
+const LEADERBOARD_TITLE = 'Sunnah Shield Points | نقاط درع السنة';
 
 function hasAdminPermission(interaction) {
   return interaction.memberPermissions?.has(PermissionFlagsBits.Administrator);
 }
 
 function formatPoints(total) {
-  return `${total} ${POINT_NAME}`;
+  return `${total} ${POINT_SYMBOL}`;
 }
 
 async function handleAdd(interaction) {
   if (!hasAdminPermission(interaction)) {
     await interaction.reply({
-      content: `Only admins can add ${POINT_NAME}.`,
+      content: `Only admins can add ${POINT_SYMBOL}.`,
       ephemeral: true,
     });
     return;
@@ -56,7 +57,7 @@ async function handleAdd(interaction) {
 async function handleRemove(interaction) {
   if (!hasAdminPermission(interaction)) {
     await interaction.reply({
-      content: `Only admins can remove ${POINT_NAME}.`,
+      content: `Only admins can remove ${POINT_SYMBOL}.`,
       ephemeral: true,
     });
     return;
@@ -75,7 +76,7 @@ async function handleLeaderboard(interaction) {
   const leaderboard = await getLeaderboard();
 
   if (leaderboard.length === 0) {
-    await interaction.reply(`No ${POINT_NAME} has been awarded yet.`);
+    await interaction.reply(`No ${LEADERBOARD_TITLE} has been awarded yet.`);
     return;
   }
 
@@ -83,7 +84,7 @@ async function handleLeaderboard(interaction) {
     (entry, index) => `${index + 1}. <@${entry.userId}> - ${formatPoints(entry.total)}`
   );
 
-  await interaction.reply(`**${POINT_NAME} Leaderboard**\n${lines.join('\n')}`);
+  await interaction.reply(`**${LEADERBOARD_TITLE}**\n${lines.join('\n')}`);
 }
 
 async function handleTrade(interaction) {
@@ -93,7 +94,7 @@ async function handleTrade(interaction) {
 
   if (receiver.bot) {
     await interaction.reply({
-      content: `You cannot trade ${POINT_NAME} to bots.`,
+      content: `You cannot trade ${POINT_SYMBOL} to bots.`,
       ephemeral: true,
     });
     return;
@@ -101,7 +102,7 @@ async function handleTrade(interaction) {
 
   if (receiver.id === sender.id) {
     await interaction.reply({
-      content: `You cannot trade ${POINT_NAME} to yourself.`,
+      content: `You cannot trade ${POINT_SYMBOL} to yourself.`,
       ephemeral: true,
     });
     return;

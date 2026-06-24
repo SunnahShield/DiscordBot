@@ -1,6 +1,6 @@
-# Knowledge Point Discord Bot
+# Sunnah Shield Points Discord Bot
 
-Discord slash-command bot for **Knowledge Point | نقطة معرفة**.
+Discord slash-command bot for **Sunnah Shield Points | نقاط درع السنة**.
 
 ## Commands
 
