@@ -32,6 +32,7 @@ const client = new Client({
 
 const POINT_SYMBOL = 'SSP';
 const LEADERBOARD_TITLE = 'Sunnah Shield Points | نقاط درع السنة';
+const DEEPFRY_LABEL = 'Deepfry';
 
 const ROLE_IDS = {
   member: '1149168371984777287',
@@ -214,17 +215,21 @@ function hasPermissionToAct(member) {
   return getActorLevel(member) > 0;
 }
 
-function canActOnTarget(actorMember, targetMember) {
+function canActOnTarget(actorMember, targetMember, targetUserId) {
   if (!hasPermissionToAct(actorMember)) {
     return false;
   }
 
-  if (actorMember.id === targetMember.id) {
+  if (actorMember.id === targetUserId) {
     return false;
   }
 
-  if (targetMember.roles.cache.has(ROLE_IDS.staff)) {
+  if (targetMember?.roles.cache.has(ROLE_IDS.staff)) {
     return false;
+  }
+
+  if (!targetMember) {
+    return true;
   }
 
   return getActorLevel(actorMember) > getActorLevel(targetMember);
@@ -246,31 +251,25 @@ async function applyPunishment(interaction, punishmentKey) {
     return;
   }
 
-  if (!targetMember) {
-    await interaction.editReply({
-      content: 'I could not find that member in this server.',
-    });
-    return;
-  }
-
-  const genderLogChannelId = getGenderLogChannelId(targetMember);
-
-  if (!canActOnTarget(actorMember, targetMember)) {
+  if (!canActOnTarget(actorMember, targetMember, targetUser.id)) {
     await interaction.editReply({
       content: 'You cannot use that punishment on this user.',
     });
     return;
   }
 
+  const genderLogChannelId = targetMember ? getGenderLogChannelId(targetMember) : null;
   const activePunishment = await getActivePunishment(targetUser.id);
-  const removedRoleIdsThisAction = await removeBaseRoles(targetMember);
+  const removedRoleIdsThisAction = targetMember ? await removeBaseRoles(targetMember) : [];
   const savedRoleIds = activePunishment?.savedRoleIds ?? removedRoleIdsThisAction;
 
-  if (activePunishment?.roleId) {
+  if (activePunishment?.roleId && targetMember) {
     await removeRoles(targetMember, [activePunishment.roleId]);
   }
 
-  await addRoles(targetMember, [punishment.roleId]);
+  if (targetMember) {
+    await addRoles(targetMember, [punishment.roleId]);
+  }
 
   await setActivePunishment(targetUser.id, {
     type: punishmentKey,
@@ -312,14 +311,7 @@ async function undoPunishment(interaction, punishmentKey) {
     return;
   }
 
-  if (!targetMember) {
-    await interaction.editReply({
-      content: 'I could not find that member in this server.',
-    });
-    return;
-  }
-
-  if (!canActOnTarget(actorMember, targetMember)) {
+  if (!canActOnTarget(actorMember, targetMember, targetUser.id)) {
     await interaction.editReply({
       content: 'You cannot undo that punishment for this user.',
     });
@@ -335,12 +327,102 @@ async function undoPunishment(interaction, punishmentKey) {
     return;
   }
 
-  await removeRoles(targetMember, [punishment.roleId]);
-  await addRoles(targetMember, activePunishment.savedRoleIds ?? []);
+  if (targetMember) {
+    await removeRoles(targetMember, [punishment.roleId]);
+    await addRoles(targetMember, activePunishment.savedRoleIds ?? []);
+  }
+
   await clearActivePunishment(targetUser.id);
 
   await interaction.editReply({
     content: `${punishment.label} removed from ${targetUser}. Saved roles were restored.`,
+  });
+}
+
+async function handleDeepfry(interaction) {
+  await interaction.deferReply({ ephemeral: false });
+
+  const targetUser = interaction.options.getUser('user', true);
+  const reason = getReason(interaction);
+  const actorMember = await fetchMember(interaction.guild, interaction.user.id);
+  const targetMember = await fetchMember(interaction.guild, targetUser.id);
+
+  if (!actorMember) {
+    await interaction.editReply({
+      content: 'I could not read your server member record.',
+    });
+    return;
+  }
+
+  if (!canActOnTarget(actorMember, targetMember, targetUser.id)) {
+    await interaction.editReply({
+      content: 'You cannot use that punishment on this user.',
+    });
+    return;
+  }
+
+  const activePunishment = await getActivePunishment(targetUser.id);
+
+  if (activePunishment?.roleId && targetMember) {
+    await removeRoles(targetMember, [activePunishment.roleId]);
+  }
+
+  await setActivePunishment(targetUser.id, {
+    type: 'deepfry',
+    moderatorId: interaction.user.id,
+    reason,
+    updatedAt: new Date().toISOString(),
+  });
+
+  const alreadyBanned = await interaction.guild.bans.fetch(targetUser.id).then(
+    () => true,
+    () => false
+  );
+
+  if (!alreadyBanned) {
+    await interaction.guild.bans.create(targetUser.id, { reason });
+  }
+
+  await interaction.editReply({
+    content: `${DEEPFRY_LABEL} applied to ${targetUser}. Reason: ${reason}.`,
+  });
+}
+
+async function handleUndeepfry(interaction) {
+  await interaction.deferReply({ ephemeral: false });
+
+  const targetUser = interaction.options.getUser('user', true);
+  const actorMember = await fetchMember(interaction.guild, interaction.user.id);
+  const targetMember = await fetchMember(interaction.guild, targetUser.id);
+
+  if (!actorMember) {
+    await interaction.editReply({
+      content: 'I could not read your server member record.',
+    });
+    return;
+  }
+
+  if (!canActOnTarget(actorMember, targetMember, targetUser.id)) {
+    await interaction.editReply({
+      content: 'You cannot undo that punishment for this user.',
+    });
+    return;
+  }
+
+  const activePunishment = await getActivePunishment(targetUser.id);
+
+  if (!activePunishment || activePunishment.type !== 'deepfry') {
+    await interaction.editReply({
+      content: `${targetUser} does not currently have ${DEEPFRY_LABEL}.`,
+    });
+    return;
+  }
+
+  await interaction.guild.bans.remove(targetUser.id).catch(() => null);
+  await clearActivePunishment(targetUser.id);
+
+  await interaction.editReply({
+    content: `${DEEPFRY_LABEL} removed from ${targetUser}. They have been unbanned.`,
   });
 }
 
@@ -441,6 +523,13 @@ async function handleJoinGuard(member) {
     return;
   }
 
+  if (activePunishment.type === 'deepfry') {
+    await member.guild.bans.create(member.id, {
+      reason: 'Active deepfry record rejoin guard',
+    }).catch(() => null);
+    return;
+  }
+
   await removeBaseRoles(member);
   await addRoles(member, [activePunishment.roleId]);
 
@@ -530,6 +619,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return;
     }
 
+    if (interaction.commandName === 'deepfry') {
+      await handleDeepfry(interaction);
+      return;
+    }
+
     if (interaction.commandName === 'ungrill') {
       await undoPunishment(interaction, 'grill');
       return;
@@ -547,6 +641,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     if (interaction.commandName === 'unnaughty') {
       await undoPunishment(interaction, 'naughty');
+      return;
+    }
+
+    if (interaction.commandName === 'undeepfry') {
+      await handleUndeepfry(interaction);
     }
   } catch (error) {
     console.error(error);

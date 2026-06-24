@@ -61,10 +61,12 @@ const commands = [
   punishCommand('sgrill', 'Apply Super Grill to a user'),
   punishCommand('jail', 'Apply Jail to a user'),
   punishCommand('naughty', 'Apply Naughty to a user'),
+  punishCommand('deepfry', 'Ban a user'),
   undoCommand('ungrill', 'Remove Grill from a user'),
   undoCommand('unsgrill', 'Remove Super Grill from a user'),
   undoCommand('unjail', 'Remove Jail from a user'),
   undoCommand('unnaughty', 'Remove Naughty from a user'),
+  undoCommand('undeepfry', 'Unban a user'),
 ];
 
 module.exports = {
