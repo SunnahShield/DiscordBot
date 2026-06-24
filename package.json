@@ -8,6 +8,7 @@
     "deploy": "node src/deploy-commands.js"
   },
   "dependencies": {
+    "discord-api-types": "^0.37.100",
     "discord.js": "^14.16.3",
     "dotenv": "^16.4.5"
   },
