@@ -6,6 +6,7 @@ const {
   GatewayIntentBits,
   PermissionFlagsBits,
 } = require('discord.js');
+const { deployCommands } = require('./deploy-commands');
 const {
   addUserPoints,
   getLeaderboard,
@@ -168,4 +169,12 @@ client.on(Events.InteractionCreate, async (interaction) => {
   }
 });
 
-client.login(DISCORD_TOKEN);
+async function start() {
+  await deployCommands();
+  await client.login(DISCORD_TOKEN);
+}
+
+start().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

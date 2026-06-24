@@ -19,7 +19,13 @@ async function deployCommands() {
   console.log('Slash commands registered.');
 }
 
-deployCommands().catch((error) => {
-  console.error(error);
-  process.exit(1);
-});
+module.exports = {
+  deployCommands,
+};
+
+if (require.main === module) {
+  deployCommands().catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
+}
