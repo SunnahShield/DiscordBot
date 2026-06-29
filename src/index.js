@@ -61,6 +61,8 @@ const CHANNEL_IDS = {
   superGrillAnnounce: '1515571855266811934',
   jailAnnounce: '1515571877190566008',
   naughtyAnnounce: '1493348599843782798',
+  maleLog: '1504223167433146388',
+  femaleLog: '1504223092954890441',
 };
 
 const BASE_ROLE_IDS = [
@@ -165,11 +167,19 @@ function hasStaffCommandPermission(member) {
 }
 
 function getPunishmentAnnounceChannelId(commandName) {
-  if (commandName === 'deepfry' || commandName === 'marinate') {
+  if (commandName === 'deepfry') {
     return CHANNEL_IDS.grillAnnounce;
   }
 
   return PUNISHMENTS[commandName]?.announceChannelId ?? null;
+}
+
+function getModerationLogChannelId(member) {
+  if (member.roles.cache.has(ROLE_IDS.female) || member.roles.cache.has(ROLE_IDS.femaleNonMuslim)) {
+    return CHANNEL_IDS.femaleLog;
+  }
+
+  return CHANNEL_IDS.maleLog;
 }
 
 function unique(values) {
@@ -513,10 +523,12 @@ async function handleMarinate(interaction) {
 
   await targetMember.timeout(durationMs, reason);
 
+  const logMessage = `**Timeout Log**\n${interaction.user} timed out ${targetUser} for ${durationText}.\nReason: ${reason}`;
+
   await sendVisibleMessages(
     interaction,
-    `🥣 **${targetUser} has been MARINATED for ${durationText}** 🥣\nيتبل شوية\nReason: ${reason}`,
-    getPunishmentAnnounceChannelId('marinate')
+    logMessage,
+    getModerationLogChannelId(targetMember)
   );
 }
 
@@ -547,10 +559,12 @@ async function handleUnmarinate(interaction) {
 
   await targetMember.timeout(null, `Timeout removed by ${interaction.user.tag}`);
 
+  const logMessage = `**Timeout Log**\n${interaction.user} removed ${targetUser}'s timeout.`;
+
   await sendVisibleMessages(
     interaction,
-    `🥣❌ **${targetUser} has been UNMARINATED**\nطلع من التتبيلة`,
-    getPunishmentAnnounceChannelId('marinate')
+    logMessage,
+    getModerationLogChannelId(targetMember)
   );
 }
 
