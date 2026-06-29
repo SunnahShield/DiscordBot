@@ -33,6 +33,9 @@ const client = new Client({
 const POINT_SYMBOL = 'SSP';
 const LEADERBOARD_TITLE = 'Sunnah Shield Points | نقاط درع السنة';
 const DEEPFRY_LABEL = 'Deepfry';
+const MAX_TIMEOUT_MS = 28 * 24 * 60 * 60 * 1000;
+const STAFF_COMMAND_MIN_LEVEL = 30;
+const BULK_DELETE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 
 const ROLE_IDS = {
   member: '1149168371984777287',
@@ -58,8 +61,6 @@ const CHANNEL_IDS = {
   superGrillAnnounce: '1515571855266811934',
   jailAnnounce: '1515571877190566008',
   naughtyAnnounce: '1493348599843782798',
-  maleLog: '1504223167433146388',
-  femaleLog: '1504223092954890441',
 };
 
 const BASE_ROLE_IDS = [
@@ -119,6 +120,24 @@ const AUTH_LEVELS = [
   { level: 20, roleIds: [ROLE_IDS.maleHelpers, ROLE_IDS.femaleHelpers] },
 ];
 
+const COMMAND_ALIASES = {
+  شوي: 'grill',
+  شوي_اوي: 'sgrill',
+  سجن: 'jail',
+  نوتي: 'naughty',
+  قلي: 'deepfry',
+  تتبيل: 'marinate',
+  فك_شوي: 'ungrill',
+  فك_شوي_اوي: 'unsgrill',
+  فك_سجن: 'unjail',
+  فك_نوتي: 'unnaughty',
+  فك_قلي: 'undeepfry',
+  فك_تتبيل: 'unmarinate',
+  مسح: 'purge',
+  مسح_الكل: 'allpurge',
+  مساعدة: 'help',
+};
+
 function hasAdminPermission(interaction) {
   return interaction.memberPermissions?.has(PermissionFlagsBits.Administrator);
 }
@@ -141,7 +160,15 @@ function getActorLevel(member) {
   return 0;
 }
 
+function hasStaffCommandPermission(member) {
+  return getActorLevel(member) >= STAFF_COMMAND_MIN_LEVEL;
+}
+
 function getPunishmentAnnounceChannelId(commandName) {
+  if (commandName === 'deepfry' || commandName === 'marinate') {
+    return CHANNEL_IDS.grillAnnounce;
+  }
+
   return PUNISHMENTS[commandName]?.announceChannelId ?? null;
 }
 
@@ -149,14 +176,23 @@ function unique(values) {
   return [...new Set(values.filter(Boolean))];
 }
 
-function formatRoleList(roleIds, guild) {
-  if (!roleIds.length) {
-    return 'none';
-  }
+function getCommandName(interaction) {
+  return COMMAND_ALIASES[interaction.commandName] ?? interaction.commandName;
+}
 
-  return roleIds
-    .map((roleId) => guild.roles.cache.get(roleId)?.name ?? `<@&${roleId}>`)
-    .join(', ');
+function getDurationMs(amount, unit) {
+  const multipliers = {
+    minutes: 60 * 1000,
+    hours: 60 * 60 * 1000,
+    days: 24 * 60 * 60 * 1000,
+  };
+
+  return amount * multipliers[unit];
+}
+
+function formatDuration(amount, unit) {
+  const singular = unit.endsWith('s') ? unit.slice(0, -1) : unit;
+  return `${amount} ${amount === 1 ? singular : unit}`;
 }
 
 async function fetchMember(guild, userId) {
@@ -205,27 +241,16 @@ async function sendChannelMessage(guild, channelId, content) {
   }
 }
 
-async function sendPunishmentMessages(interaction, content, extraChannelMessages) {
+async function sendVisibleMessages(interaction, content, extraChannelId) {
   await interaction.editReply({ content });
 
-  const sentChannelIds = new Set([interaction.channelId]);
-
-  for (const { channelId, message } of extraChannelMessages) {
-    if (!channelId || sentChannelIds.has(channelId)) {
-      continue;
-    }
-
-    sentChannelIds.add(channelId);
-    await sendChannelMessage(interaction.guild, channelId, message);
+  if (extraChannelId && extraChannelId !== interaction.channelId) {
+    await sendChannelMessage(interaction.guild, extraChannelId, content);
   }
 }
 
-function hasPermissionToAct(member) {
-  return getActorLevel(member) > 0;
-}
-
 function canActOnTarget(actorMember, targetMember, targetUserId) {
-  if (!hasPermissionToAct(actorMember)) {
+  if (!hasStaffCommandPermission(actorMember)) {
     return false;
   }
 
@@ -244,19 +269,50 @@ function canActOnTarget(actorMember, targetMember, targetUserId) {
   return getActorLevel(actorMember) > getActorLevel(targetMember);
 }
 
+function canBotManageMessages(channel, botMember) {
+  if (!botMember) {
+    return false;
+  }
+
+  const permissions = channel.permissionsFor(botMember);
+
+  return Boolean(
+    permissions?.has([
+      PermissionFlagsBits.ViewChannel,
+      PermissionFlagsBits.ReadMessageHistory,
+      PermissionFlagsBits.ManageMessages,
+    ])
+  );
+}
+
+async function requireStaff(interaction, deferred = false) {
+  const actorMember = await fetchMember(interaction.guild, interaction.user.id);
+
+  if (!actorMember || !hasStaffCommandPermission(actorMember)) {
+    const message = { content: 'Only mods, senior mods, and admins can use this command.' };
+
+    if (deferred) {
+      await interaction.editReply(message);
+    } else {
+      await interaction.reply({ ...message, ephemeral: true });
+    }
+
+    return null;
+  }
+
+  return actorMember;
+}
+
 async function applyPunishment(interaction, punishmentKey) {
   await interaction.deferReply({ ephemeral: false });
 
   const punishment = PUNISHMENTS[punishmentKey];
   const targetUser = interaction.options.getUser('user', true);
   const reason = getReason(interaction);
-  const actorMember = await fetchMember(interaction.guild, interaction.user.id);
+  const actorMember = await requireStaff(interaction, true);
   const targetMember = await fetchMember(interaction.guild, targetUser.id);
 
   if (!actorMember) {
-    await interaction.editReply({
-      content: 'I could not read your server member record.',
-    });
     return;
   }
 
@@ -288,14 +344,11 @@ async function applyPunishment(interaction, punishmentKey) {
     updatedAt: new Date().toISOString(),
   });
 
-  const publicMessage = PUNISH_MESSAGES[punishmentKey](targetUser);
-
-  await sendPunishmentMessages(interaction, publicMessage, [
-    {
-      channelId: punishment.announceChannelId,
-      message: publicMessage,
-    },
-  ]);
+  await sendVisibleMessages(
+    interaction,
+    PUNISH_MESSAGES[punishmentKey](targetUser),
+    punishment.announceChannelId
+  );
 }
 
 async function undoPunishment(interaction, punishmentKey) {
@@ -303,13 +356,10 @@ async function undoPunishment(interaction, punishmentKey) {
 
   const punishment = PUNISHMENTS[punishmentKey];
   const targetUser = interaction.options.getUser('user', true);
-  const actorMember = await fetchMember(interaction.guild, interaction.user.id);
+  const actorMember = await requireStaff(interaction, true);
   const targetMember = await fetchMember(interaction.guild, targetUser.id);
 
   if (!actorMember) {
-    await interaction.editReply({
-      content: 'I could not read your server member record.',
-    });
     return;
   }
 
@@ -336,16 +386,10 @@ async function undoPunishment(interaction, punishmentKey) {
 
   await clearActivePunishment(targetUser.id);
 
-  const publicMessage = UNDO_MESSAGES[`un${punishmentKey}`](targetUser);
-
-  await interaction.editReply({
-    content: publicMessage,
-  });
-
-  await sendChannelMessage(
-    interaction.guild,
-    getPunishmentAnnounceChannelId(punishmentKey),
-    publicMessage
+  await sendVisibleMessages(
+    interaction,
+    UNDO_MESSAGES[`un${punishmentKey}`](targetUser),
+    getPunishmentAnnounceChannelId(punishmentKey)
   );
 }
 
@@ -354,13 +398,10 @@ async function handleDeepfry(interaction) {
 
   const targetUser = interaction.options.getUser('user', true);
   const reason = getReason(interaction);
-  const actorMember = await fetchMember(interaction.guild, interaction.user.id);
+  const actorMember = await requireStaff(interaction, true);
   const targetMember = await fetchMember(interaction.guild, targetUser.id);
 
   if (!actorMember) {
-    await interaction.editReply({
-      content: 'I could not read your server member record.',
-    });
     return;
   }
 
@@ -393,22 +434,21 @@ async function handleDeepfry(interaction) {
     await interaction.guild.bans.create(targetUser.id, { reason });
   }
 
-  await interaction.editReply({
-    content: `${DEEPFRY_LABEL} applied to ${targetUser}. Reason: ${reason}.`,
-  });
+  await sendVisibleMessages(
+    interaction,
+    PUNISH_MESSAGES.deepfry(targetUser),
+    getPunishmentAnnounceChannelId('deepfry')
+  );
 }
 
 async function handleUndeepfry(interaction) {
   await interaction.deferReply({ ephemeral: false });
 
   const targetUser = interaction.options.getUser('user', true);
-  const actorMember = await fetchMember(interaction.guild, interaction.user.id);
+  const actorMember = await requireStaff(interaction, true);
   const targetMember = await fetchMember(interaction.guild, targetUser.id);
 
   if (!actorMember) {
-    await interaction.editReply({
-      content: 'I could not read your server member record.',
-    });
     return;
   }
 
@@ -431,11 +471,87 @@ async function handleUndeepfry(interaction) {
   await interaction.guild.bans.remove(targetUser.id).catch(() => null);
   await clearActivePunishment(targetUser.id);
 
-  const publicMessage = UNDO_MESSAGES.undeepfry(targetUser);
+  await sendVisibleMessages(interaction, UNDO_MESSAGES.undeepfry(targetUser), null);
+}
 
-  await interaction.editReply({
-    content: publicMessage,
-  });
+async function handleMarinate(interaction) {
+  await interaction.deferReply({ ephemeral: false });
+
+  const targetUser = interaction.options.getUser('user', true);
+  const duration = interaction.options.getInteger('duration', true);
+  const unit = interaction.options.getString('unit', true);
+  const durationMs = getDurationMs(duration, unit);
+  const durationText = formatDuration(duration, unit);
+  const reason = getReason(interaction);
+  const actorMember = await requireStaff(interaction, true);
+  const targetMember = await fetchMember(interaction.guild, targetUser.id);
+
+  if (!actorMember) {
+    return;
+  }
+
+  if (!targetMember) {
+    await interaction.editReply({
+      content: 'I could not find that member in this server.',
+    });
+    return;
+  }
+
+  if (durationMs > MAX_TIMEOUT_MS) {
+    await interaction.editReply({
+      content: 'Discord timeouts cannot be longer than 28 days.',
+    });
+    return;
+  }
+
+  if (!canActOnTarget(actorMember, targetMember, targetUser.id)) {
+    await interaction.editReply({
+      content: 'You cannot marinate this user.',
+    });
+    return;
+  }
+
+  await targetMember.timeout(durationMs, reason);
+
+  await sendVisibleMessages(
+    interaction,
+    `🥣 **${targetUser} has been MARINATED for ${durationText}** 🥣\nيتبل شوية\nReason: ${reason}`,
+    getPunishmentAnnounceChannelId('marinate')
+  );
+}
+
+async function handleUnmarinate(interaction) {
+  await interaction.deferReply({ ephemeral: false });
+
+  const targetUser = interaction.options.getUser('user', true);
+  const actorMember = await requireStaff(interaction, true);
+  const targetMember = await fetchMember(interaction.guild, targetUser.id);
+
+  if (!actorMember) {
+    return;
+  }
+
+  if (!targetMember) {
+    await interaction.editReply({
+      content: 'I could not find that member in this server.',
+    });
+    return;
+  }
+
+  if (!canActOnTarget(actorMember, targetMember, targetUser.id)) {
+    await interaction.editReply({
+      content: 'You cannot unmarinate this user.',
+    });
+    return;
+  }
+
+  await targetMember.timeout(null, `Timeout removed by ${interaction.user.tag}`);
+
+  await sendVisibleMessages(
+    interaction,
+    `🥣❌ **${targetUser} has been UNMARINATED**\nطلع من التتبيلة`,
+    getPunishmentAnnounceChannelId('marinate')
+  );
 }
 
 async function handleAdd(interaction) {
@@ -528,6 +644,139 @@ async function handleTrade(interaction) {
   );
 }
 
+async function deleteMessagesInChannel(channel, count, targetUserId, botMember) {
+  if (!channel?.messages?.fetch || !canBotManageMessages(channel, botMember)) {
+    return 0;
+  }
+
+  let deletedCount = 0;
+  let before;
+  let scanned = 0;
+
+  while (deletedCount < count && scanned < 5000) {
+    const fetched = await channel.messages.fetch({ limit: 100, before }).catch(() => null);
+
+    if (!fetched?.size) {
+      break;
+    }
+
+    scanned += fetched.size;
+    before = fetched.last().id;
+
+    const candidates = [...fetched.values()]
+      .filter((message) => !targetUserId || message.author?.id === targetUserId)
+      .filter((message) => Date.now() - message.createdTimestamp < BULK_DELETE_MAX_AGE_MS)
+      .slice(0, count - deletedCount);
+
+    if (!candidates.length) {
+      continue;
+    }
+
+    const deleted = await channel.bulkDelete(candidates, true).catch(() => null);
+    deletedCount += deleted?.size ?? 0;
+  }
+
+  return deletedCount;
+}
+
+async function handlePurge(interaction) {
+  await interaction.deferReply({ ephemeral: true });
+
+  const actorMember = await requireStaff(interaction, true);
+  if (!actorMember) {
+    return;
+  }
+
+  const count = interaction.options.getInteger('count', true);
+  const targetUser = interaction.options.getUser('user', false);
+  const targetMember = targetUser ? await fetchMember(interaction.guild, targetUser.id) : null;
+
+  if (targetUser && !canActOnTarget(actorMember, targetMember, targetUser.id)) {
+    await interaction.editReply({
+      content: 'You cannot purge messages from this user.',
+    });
+    return;
+  }
+
+  const botMember = await fetchMember(interaction.guild, client.user.id);
+  const deletedCount = await deleteMessagesInChannel(
+    interaction.channel,
+    count,
+    targetUser?.id,
+    botMember
+  );
+
+  await interaction.editReply({
+    content: `Deleted ${deletedCount} message(s)${
+      targetUser ? ` from ${targetUser}` : ''
+    }. Messages older than 14 days are skipped by Discord bulk delete.`,
+  });
+}
+
+async function handleAllPurge(interaction) {
+  await interaction.deferReply({ ephemeral: true });
+
+  const actorMember = await requireStaff(interaction, true);
+  if (!actorMember) {
+    return;
+  }
+
+  const targetUser = interaction.options.getUser('user', true);
+  const count = interaction.options.getInteger('count', true);
+  const targetMember = await fetchMember(interaction.guild, targetUser.id);
+
+  if (!canActOnTarget(actorMember, targetMember, targetUser.id)) {
+    await interaction.editReply({
+      content: 'You cannot purge messages from this user.',
+    });
+    return;
+  }
+
+  const botMember = await fetchMember(interaction.guild, client.user.id);
+  const channels = await interaction.guild.channels.fetch();
+  let deletedCount = 0;
+
+  for (const channel of channels.values()) {
+    if (deletedCount >= count) {
+      break;
+    }
+
+    if (!channel?.isTextBased?.() || !channel.messages?.fetch) {
+      continue;
+    }
+
+    deletedCount += await deleteMessagesInChannel(
+      channel,
+      count - deletedCount,
+      targetUser.id,
+      botMember
+    );
+  }
+
+  await interaction.editReply({
+    content: `Deleted ${deletedCount} message(s) from ${targetUser} across available channels. Messages older than 14 days are skipped by Discord bulk delete.`,
+  });
+}
+
+async function handleHelp(interaction) {
+  await interaction.reply({
+    ephemeral: true,
+    content: [
+      '**Sunnah Shield Bot Commands**',
+      '`/grill user reason` or `/شوي` - remove base roles and apply Grill.',
+      '`/sgrill user reason` or `/شوي_اوي` - switch/apply Super Grill.',
+      '`/jail user reason` or `/سجن` - remove base roles and apply Jail.',
+      '`/naughty user reason` or `/نوتي` - remove base roles and apply Naughty.',
+      '`/deepfry user reason` or `/قلي` - ban a user.',
+      '`/marinate user duration unit reason` or `/تتبيل` - timeout a user.',
+      '`/ungrill`, `/unsgrill`, `/unjail`, `/unnaughty`, `/undeepfry`, `/unmarinate` - undo the matching action.',
+      '`/purge count user?` or `/مسح` - delete recent messages in this channel.',
+      '`/allpurge user count` or `/مسح_الكل` - delete a user’s recent messages across channels.',
+      'Punishment and purge commands are mod/senior/admin only. Helpers are excluded.',
+    ].join('\n'),
+  });
+}
+
 async function handleJoinGuard(member) {
   const activePunishment = await getActivePunishment(member.id);
 
@@ -536,9 +785,11 @@ async function handleJoinGuard(member) {
   }
 
   if (activePunishment.type === 'deepfry') {
-    await member.guild.bans.create(member.id, {
-      reason: 'Active deepfry record rejoin guard',
-    }).catch(() => null);
+    await member.guild.bans
+      .create(member.id, {
+        reason: 'Active deepfry record rejoin guard',
+      })
+      .catch(() => null);
     return;
   }
 
@@ -590,74 +841,101 @@ client.on(Events.InteractionCreate, async (interaction) => {
     return;
   }
 
+  const commandName = getCommandName(interaction);
+
   try {
-    if (interaction.commandName === 'add') {
+    if (commandName === 'add') {
       await handleAdd(interaction);
       return;
     }
 
-    if (interaction.commandName === 'remove') {
+    if (commandName === 'remove') {
       await handleRemove(interaction);
       return;
     }
 
-    if (interaction.commandName === 'leaderboard') {
+    if (commandName === 'leaderboard') {
       await handleLeaderboard(interaction);
       return;
     }
 
-    if (interaction.commandName === 'trade') {
+    if (commandName === 'trade') {
       await handleTrade(interaction);
       return;
     }
 
-    if (interaction.commandName === 'grill') {
+    if (commandName === 'grill') {
       await applyPunishment(interaction, 'grill');
       return;
     }
 
-    if (interaction.commandName === 'sgrill') {
+    if (commandName === 'sgrill') {
       await applyPunishment(interaction, 'sgrill');
       return;
     }
 
-    if (interaction.commandName === 'jail') {
+    if (commandName === 'jail') {
       await applyPunishment(interaction, 'jail');
       return;
     }
 
-    if (interaction.commandName === 'naughty') {
+    if (commandName === 'naughty') {
       await applyPunishment(interaction, 'naughty');
       return;
     }
 
-    if (interaction.commandName === 'deepfry') {
+    if (commandName === 'deepfry') {
       await handleDeepfry(interaction);
       return;
     }
 
-    if (interaction.commandName === 'ungrill') {
+    if (commandName === 'marinate') {
+      await handleMarinate(interaction);
+      return;
+    }
+
+    if (commandName === 'ungrill') {
       await undoPunishment(interaction, 'grill');
       return;
     }
 
-    if (interaction.commandName === 'unsgrill') {
+    if (commandName === 'unsgrill') {
       await undoPunishment(interaction, 'sgrill');
       return;
     }
 
-    if (interaction.commandName === 'unjail') {
+    if (commandName === 'unjail') {
       await undoPunishment(interaction, 'jail');
       return;
     }
 
-    if (interaction.commandName === 'unnaughty') {
+    if (commandName === 'unnaughty') {
       await undoPunishment(interaction, 'naughty');
       return;
     }
 
-    if (interaction.commandName === 'undeepfry') {
+    if (commandName === 'undeepfry') {
       await handleUndeepfry(interaction);
+      return;
+    }
+
+    if (commandName === 'unmarinate') {
+      await handleUnmarinate(interaction);
+      return;
+    }
+
+    if (commandName === 'purge') {
+      await handlePurge(interaction);
+      return;
+    }
+
+    if (commandName === 'allpurge') {
+      await handleAllPurge(interaction);
+      return;
+    }
+
+    if (commandName === 'help') {
+      await handleHelp(interaction);
     }
   } catch (error) {
     console.error(error);

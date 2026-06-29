@@ -1,7 +1,7 @@
 require('dotenv').config();
 
 const { REST, Routes } = require('discord.js');
-const { commands, punishmentLocalizations } = require('./commands');
+const { commands } = require('./commands');
 
 const { CLIENT_ID, DISCORD_TOKEN, GUILD_ID } = process.env;
 
@@ -17,17 +17,7 @@ async function deployCommands() {
     : Routes.applicationCommands(CLIENT_ID);
 
   await rest.put(route, {
-body: commands.map((command) => {
-      const json = command.toJSON();
-      const localizations = punishmentLocalizations[json.name];
-
-      if (localizations) {
-        json.name_localizations = localizations.name_localizations;
-        json.description_localizations = localizations.description_localizations;
-      }
-
-      return json;
-    }),
+    body: commands.map((command) => command.toJSON()),
   });
 
   console.log(
