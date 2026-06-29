@@ -34,7 +34,7 @@ const undoCommand = (name, description) =>
 
 const punishmentLocalizations = {
   grill: {
-    name_localizations: { ar: 'شوي' },
+    name_localizations: { ar: 'agrill' },
     description_localizations: { ar: 'شوي' },
   },
   sgrill: {
