@@ -32,6 +32,48 @@ const undoCommand = (name, description) =>
     .setDescription(description)
     .addUserOption(userOption);
 
+const punishmentLocalizations = {
+  grill: {
+    name_localizations: { ar: 'شوي' },
+    description_localizations: { ar: 'شوي' },
+  },
+  sgrill: {
+    name_localizations: { ar: 'شوي اوي' },
+    description_localizations: { ar: 'شوي اوي' },
+  },
+  jail: {
+    name_localizations: { ar: 'سجن' },
+    description_localizations: { ar: 'سجن' },
+  },
+  naughty: {
+    name_localizations: { ar: 'نوتي' },
+    description_localizations: { ar: 'نوتي' },
+  },
+  deepfry: {
+    name_localizations: { ar: 'قلي' },
+    description_localizations: { ar: 'قلي' },
+  },
+  ungrill: {
+    name_localizations: { ar: 'فك شوي' },
+    description_localizations: { ar: 'فك شوي' },
+  },
+  unsgrill: {
+    name_localizations: { ar: 'فك شوي اوي' },
+    description_localizations: { ar: 'فك شوي اوي' },
+  },
+  unjail: {
+    name_localizations: { ar: 'فك سجن' },
+    description_localizations: { ar: 'فك سجن' },
+  },
+  unnaughty: {
+    name_localizations: { ar: 'فك نوتي' },
+    description_localizations: { ar: 'فك نوتي' },
+  },
+  undeepfry: {
+    name_localizations: { ar: 'فك قلي' },
+    description_localizations: { ar: 'فك قلي' },
+  },
+};
 const commands = [
   new SlashCommandBuilder()
     .setName('add')
@@ -71,4 +113,5 @@ const commands = [
 
 module.exports = {
   commands,
+ punishmentLocalizations,
 };
