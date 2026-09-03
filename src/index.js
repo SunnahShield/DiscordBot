@@ -4,6 +4,7 @@ const {
   Client,
   Events,
   GatewayIntentBits,
+  OverwriteType,
   PermissionFlagsBits,
 } = require('discord.js');
 const { deployCommands } = require('./deploy-commands');
@@ -532,6 +533,14 @@ async function handleMarinate(interaction) {
   );
 }
 
+function canBotManageChannel(channel, botMember) {
+  if (!botMember) {
+    return false;
+  }
+
+  return Boolean(channel.permissionsFor(botMember)?.has(PermissionFlagsBits.ManageChannels));
+}
+
 async function handleUnmarinate(interaction) {
   await interaction.deferReply({ ephemeral: false });
 
@@ -772,6 +781,101 @@ async function handleAllPurge(interaction) {
   });
 }
 
+async function lockChannel(channel, botMember, reason) {
+  if (!channel?.permissionOverwrites?.edit || !canBotManageChannel(channel, botMember)) {
+    return {
+      ok: false,
+      reason: 'missing_permission',
+    };
+  }
+
+  const auditReason = reason
+    ? `Server lockdown by bot command: ${reason}`
+    : 'Server lockdown by bot command';
+  const targets = [channel.guild.roles.everyone.id];
+
+  for (const overwrite of channel.permissionOverwrites.cache.values()) {
+    if (overwrite.id === channel.guild.roles.everyone.id) {
+      continue;
+    }
+
+    if (overwrite.type === OverwriteType.Role) {
+      const role = channel.guild.roles.cache.get(overwrite.id);
+
+      if (role?.permissions.has(PermissionFlagsBits.Administrator)) {
+        continue;
+      }
+
+      targets.push(overwrite.id);
+      continue;
+    }
+
+    if (overwrite.type === OverwriteType.Member) {
+      const member = await fetchMember(channel.guild, overwrite.id);
+
+      if (member?.permissions.has(PermissionFlagsBits.Administrator)) {
+        continue;
+      }
+
+      targets.push(overwrite.id);
+    }
+  }
+
+  for (const targetId of unique(targets)) {
+    await channel.permissionOverwrites.edit(
+      targetId,
+      { ViewChannel: false },
+      { reason: auditReason }
+    );
+  }
+
+  return {
+    ok: true,
+  };
+}
+
+async function handleLockdown(interaction) {
+  await interaction.deferReply({ ephemeral: true });
+
+  if (!hasAdminPermission(interaction)) {
+    await interaction.editReply({
+      content: 'Only administrators can run lockdown.',
+    });
+    return;
+  }
+
+  const reason = getReason(interaction);
+  const botMember = await fetchMember(interaction.guild, client.user.id);
+  const channels = await interaction.guild.channels.fetch();
+  let lockedCount = 0;
+  let skippedCount = 0;
+  let failedCount = 0;
+
+  for (const channel of channels.values()) {
+    if (!channel?.permissionOverwrites?.edit) {
+      skippedCount += 1;
+      continue;
+    }
+
+    try {
+      const result = await lockChannel(channel, botMember, reason);
+
+      if (result.ok) {
+        lockedCount += 1;
+      } else {
+        skippedCount += 1;
+      }
+    } catch (error) {
+      failedCount += 1;
+      console.error(`Failed to lock channel ${channel.id}`, error);
+    }
+  }
+
+  await interaction.editReply({
+    content: `Lockdown complete. Locked ${lockedCount} channel(s), skipped ${skippedCount}, failed ${failedCount}. Non-admin members should no longer be able to view locked channels.`,
+  });
+}
+
 async function handleHelp(interaction) {
   await interaction.reply({
     ephemeral: true,
@@ -786,6 +890,7 @@ async function handleHelp(interaction) {
       '`/ungrill`, `/unsgrill`, `/unjail`, `/unnaughty`, `/undeepfry`, `/unmarinate` - undo the matching action.',
       '`/purge count user?` or `/مسح` - delete recent messages in this channel.',
       '`/allpurge user count` or `/مسح_الكل` - delete a user’s recent messages across channels.',
+      '`/lockdown reason?` - admin-only server lockdown that hides channels from non-admins.',
       'Punishment and purge commands are mod/senior/admin only. Helpers are excluded.',
     ].join('\n'),
   });
@@ -945,6 +1050,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     if (commandName === 'allpurge') {
       await handleAllPurge(interaction);
+      return;
+    }
+
+    if (commandName === 'lockdown') {
+      await handleLockdown(interaction);
       return;
     }
 

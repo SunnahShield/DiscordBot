@@ -87,6 +87,13 @@ const allPurgeCommand = (name, description) =>
     .addUserOption(userOption)
     .addIntegerOption(countOption);
 
+const lockdownCommand = (name, description) =>
+  new SlashCommandBuilder()
+    .setName(name)
+    .setDescription(description)
+    .addStringOption(reasonOption)
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
+
 const commands = [
   new SlashCommandBuilder()
     .setName('add')
@@ -126,6 +133,7 @@ const commands = [
   undoCommand('unmarinate', 'Remove timeout from a user'),
   purgeCommand('purge', 'Delete messages in this channel'),
   allPurgeCommand('allpurge', 'Delete messages from a user across all channels'),
+  lockdownCommand('lockdown', 'Hide every channel from non-admin members'),
   new SlashCommandBuilder()
     .setName('help')
     .setDescription('Show bot command help'),

@@ -14,6 +14,7 @@ Discord slash-command bot for **Sunnah Shield Points | نقاط درع السن�
 - `/marinate`, `/unmarinate`: Timeout and remove timeout.
 - `/purge <count> [user]`: Delete recent messages in the current channel.
 - `/allpurge <user> <count>`: Delete a user's recent messages across channels.
+- `/lockdown [reason]`: Admin-only command that hides channels from non-admin members.
 - `/help`: Show command usage.
 
 Arabic aliases are registered as separate slash commands. Use underscores where Discord does not allow spaces, for example `/شوي_اوي`.
