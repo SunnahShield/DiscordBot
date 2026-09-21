@@ -3,6 +3,7 @@ require('dotenv').config();
 const {
   Client,
   ChannelType,
+  EmbedBuilder,
   Events,
   GatewayIntentBits,
   OverwriteType,
@@ -38,6 +39,7 @@ const DEEPFRY_LABEL = 'Deepfry';
 const MAX_TIMEOUT_MS = 28 * 24 * 60 * 60 * 1000;
 const STAFF_COMMAND_MIN_LEVEL = 30;
 const BULK_DELETE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+const ANNOUNCEMENT_EMBED_COLOR = 0xdd6b14;
 
 const ROLE_IDS = {
   member: '1149168371984777287',
@@ -640,6 +642,123 @@ async function handleArchive(interaction) {
   });
 }
 
+function isHttpUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' || url.protocol === 'http:';
+  } catch {
+    return false;
+  }
+}
+
+async function handleAnnouncement(interaction) {
+  await interaction.deferReply({ ephemeral: true });
+
+  if (!hasAdminPermission(interaction)) {
+    await interaction.editReply({ content: 'Only administrators can publish official announcements.' });
+    return;
+  }
+
+  const format = interaction.options.getString('format', true);
+  const message = interaction.options.getString('message', true);
+  const targetChannel = interaction.options.getChannel('channel') ?? interaction.channel;
+  const title = interaction.options.getString('title');
+  const link = interaction.options.getString('link');
+  const linkText = interaction.options.getString('link_text') ?? 'Open link';
+  const attachment = interaction.options.getAttachment('attachment');
+  const image = interaction.options.getString('image');
+  const thumbnail = interaction.options.getString('thumbnail');
+  const footer = interaction.options.getString('footer');
+
+  if (!targetChannel?.isTextBased?.() || !targetChannel?.send) {
+    await interaction.editReply({ content: 'Choose a text channel where messages can be sent.' });
+    return;
+  }
+
+  if (link && !isHttpUrl(link)) {
+    await interaction.editReply({ content: 'The link must begin with http:// or https://.' });
+    return;
+  }
+
+  if (image && !isHttpUrl(image)) {
+    await interaction.editReply({ content: 'The image URL must begin with http:// or https://.' });
+    return;
+  }
+
+  if (thumbnail && !isHttpUrl(thumbnail)) {
+    await interaction.editReply({ content: 'The thumbnail URL must begin with http:// or https://.' });
+    return;
+  }
+
+  const botMember = await fetchMember(interaction.guild, client.user.id);
+
+  if (!botMember) {
+    await interaction.editReply({ content: 'I could not load my server permissions.' });
+    return;
+  }
+
+  const permissions = targetChannel.permissionsFor(botMember);
+
+  if (!permissions?.has(PermissionFlagsBits.SendMessages)) {
+    await interaction.editReply({ content: `I cannot send messages in ${targetChannel}.` });
+    return;
+  }
+
+  if (format === 'embed' && !permissions.has(PermissionFlagsBits.EmbedLinks)) {
+    await interaction.editReply({ content: `I need Embed Links permission in ${targetChannel}.` });
+    return;
+  }
+
+  if (attachment && !permissions.has(PermissionFlagsBits.AttachFiles)) {
+    await interaction.editReply({ content: `I need Attach Files permission in ${targetChannel}.` });
+    return;
+  }
+
+  const files = attachment ? [{ attachment: attachment.url, name: attachment.name }] : [];
+  const linkLine = link ? `[${linkText}](${link})` : null;
+  const payload = { files };
+
+  if (format === 'message') {
+    payload.content = linkLine ? `${message}\n${linkLine}` : message;
+
+    if (payload.content.length > 2000) {
+      await interaction.editReply({
+        content: 'The message and link together must be 2,000 characters or fewer.',
+      });
+      return;
+    }
+  } else {
+    const embed = new EmbedBuilder().setColor(ANNOUNCEMENT_EMBED_COLOR).setDescription(message);
+
+    if (title) {
+      embed.setTitle(title);
+    }
+
+    if (footer) {
+      embed.setFooter({ text: footer });
+    }
+
+    if (linkLine) {
+      embed.addFields({ name: '\u200b', value: linkLine });
+    }
+
+    if (image) {
+      embed.setImage(image);
+    } else if (attachment?.contentType?.startsWith('image/')) {
+      embed.setImage(`attachment://${attachment.name}`);
+    }
+
+    if (thumbnail) {
+      embed.setThumbnail(thumbnail);
+    }
+
+    payload.embeds = [embed];
+  }
+
+  await targetChannel.send(payload);
+  await interaction.editReply({ content: `Official announcement published in ${targetChannel}.` });
+}
+
 async function handleUnmarinate(interaction) {
   await interaction.deferReply({ ephemeral: false });
 
@@ -991,6 +1110,7 @@ async function handleHelp(interaction) {
       '`/allpurge user count` or `/مسح_الكل` - delete a user’s recent messages across channels.',
       '`/lockdown reason?` - admin-only server lockdown that hides channels from non-admins.',
       '`/archive archive` - admin-only: lock this chat and move it to Archive 1, 2, etc.',
+      '`/announce message format channel?` - admin-only official post, with embeds, links, and one attachment.',
       'Punishment and purge commands are mod/senior/admin only. Helpers are excluded.',
     ].join('\n'),
   });
@@ -1160,6 +1280,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     if (commandName === 'archive') {
       await handleArchive(interaction);
+      return;
+    }
+
+    if (commandName === 'announce') {
+      await handleAnnouncement(interaction);
       return;
     }
 

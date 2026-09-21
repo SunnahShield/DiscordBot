@@ -107,6 +107,52 @@ const archiveCommand = new SlashCommandBuilder()
   )
   .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
 
+const announceCommand = new SlashCommandBuilder()
+  .setName('announce')
+  .setDescription('Publish an official server announcement')
+  .addStringOption((option) =>
+    option
+      .setName('message')
+      .setDescription('Announcement text; supports Markdown, Unicode, and server emojis')
+      .setRequired(true)
+      .setMaxLength(2000)
+  )
+  .addStringOption((option) =>
+    option
+      .setName('format')
+      .setDescription('How the announcement should look')
+      .setRequired(true)
+      .addChoices(
+        { name: 'Branded embed', value: 'embed' },
+        { name: 'Normal message', value: 'message' }
+      )
+  )
+  .addChannelOption((option) =>
+    option.setName('channel').setDescription('Where to publish it; defaults to this channel')
+  )
+  .addStringOption((option) =>
+    option.setName('title').setDescription('Embed title (optional)').setMaxLength(256)
+  )
+  .addStringOption((option) =>
+    option.setName('link').setDescription('Full https:// link to include').setMaxLength(700)
+  )
+  .addStringOption((option) =>
+    option.setName('link_text').setDescription('Text shown for the optional link').setMaxLength(256)
+  )
+  .addAttachmentOption((option) =>
+    option.setName('attachment').setDescription('One file to attach')
+  )
+  .addStringOption((option) =>
+    option.setName('image').setDescription('Image URL for the bottom of an embed')
+  )
+  .addStringOption((option) =>
+    option.setName('thumbnail').setDescription('Image URL for the embed thumbnail')
+  )
+  .addStringOption((option) =>
+    option.setName('footer').setDescription('Embed footer text').setMaxLength(2048)
+  )
+  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
+
 const commands = [
   new SlashCommandBuilder()
     .setName('add')
@@ -148,6 +194,7 @@ const commands = [
   allPurgeCommand('allpurge', 'Delete messages from a user across all channels'),
   lockdownCommand('lockdown', 'Hide every channel from non-admin members'),
   archiveCommand,
+  announceCommand,
   new SlashCommandBuilder()
     .setName('help')
     .setDescription('Show bot command help'),
