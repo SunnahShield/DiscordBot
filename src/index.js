@@ -22,6 +22,10 @@ const {
   getActivePunishment,
   setActivePunishment,
 } = require('./punishments-store');
+const {
+  getMemberMessageConfig,
+  setMemberMessageConfig,
+} = require('./member-message-store');
 
 const { DISCORD_TOKEN } = process.env;
 
@@ -759,6 +763,121 @@ async function handleAnnouncement(interaction) {
   await interaction.editReply({ content: `Official announcement published in ${targetChannel}.` });
 }
 
+function replaceMemberMessagePlaceholders(value, member) {
+  return value
+    .replaceAll('{user}', `<@${member.id}>`)
+    .replaceAll('{username}', member.user.username)
+    .replaceAll('{server}', member.guild.name)
+    .replaceAll('{memberCount}', String(member.guild.memberCount));
+}
+
+function createMemberMessageEmbed(config, member) {
+  const embed = new EmbedBuilder()
+    .setColor(ANNOUNCEMENT_EMBED_COLOR)
+    .setDescription(replaceMemberMessagePlaceholders(config.message, member));
+
+  if (config.title) {
+    embed.setTitle(replaceMemberMessagePlaceholders(config.title, member));
+  }
+
+  if (config.footer) {
+    embed.setFooter({ text: replaceMemberMessagePlaceholders(config.footer, member) });
+  }
+
+  if (config.image) {
+    embed.setImage(config.image);
+  }
+
+  if (config.thumbnail) {
+    embed.setThumbnail(config.thumbnail);
+  }
+
+  return embed;
+}
+
+async function sendMemberMessage(member, type) {
+  const config = await getMemberMessageConfig(member.guild.id, type);
+
+  if (!config) {
+    return;
+  }
+
+  const channel = await member.guild.channels.fetch(config.channelId).catch(() => null);
+  const botMember = await fetchMember(member.guild, client.user.id);
+
+  if (!channel?.isTextBased?.() || !channel.send || !botMember) {
+    console.warn(`Could not send ${type} message: configured channel is unavailable.`);
+    return;
+  }
+
+  const permissions = channel.permissionsFor(botMember);
+  if (
+    !permissions?.has(PermissionFlagsBits.SendMessages) ||
+    !permissions.has(PermissionFlagsBits.EmbedLinks)
+  ) {
+    console.warn(`Could not send ${type} message: missing channel permissions.`);
+    return;
+  }
+
+  await channel.send({ embeds: [createMemberMessageEmbed(config, member)] });
+}
+
+async function handleMemberMessageSetup(interaction, type) {
+  await interaction.deferReply({ ephemeral: true });
+
+  if (!hasAdminPermission(interaction)) {
+    await interaction.editReply({ content: 'Only administrators can configure member messages.' });
+    return;
+  }
+
+  const channel = interaction.options.getChannel('channel', true);
+  const message = interaction.options.getString('message', true);
+  const title = interaction.options.getString('title');
+  const footer = interaction.options.getString('footer');
+  const image = interaction.options.getString('image');
+  const thumbnail = interaction.options.getString('thumbnail');
+
+  if (!channel.isTextBased?.() || !channel.send) {
+    await interaction.editReply({ content: 'Choose a text channel where messages can be sent.' });
+    return;
+  }
+
+  for (const [label, value] of [
+    ['image URL', image],
+    ['thumbnail URL', thumbnail],
+  ]) {
+    if (value && !isHttpUrl(value)) {
+      await interaction.editReply({ content: `The ${label} must begin with http:// or https://.` });
+      return;
+    }
+  }
+
+  const botMember = await fetchMember(interaction.guild, client.user.id);
+  const permissions = botMember ? channel.permissionsFor(botMember) : null;
+  if (
+    !permissions?.has(PermissionFlagsBits.SendMessages) ||
+    !permissions.has(PermissionFlagsBits.EmbedLinks)
+  ) {
+    await interaction.editReply({
+      content: `I need Send Messages and Embed Links permissions in ${channel}.`,
+    });
+    return;
+  }
+
+  await setMemberMessageConfig(interaction.guild.id, type, {
+    channelId: channel.id,
+    message,
+    title,
+    footer,
+    image,
+    thumbnail,
+  });
+
+  await interaction.editReply({
+    content: `${type === 'welcome' ? 'Welcome' : 'Booster'} messages are now configured for ${channel}.`,
+  });
+}
+
 async function handleUnmarinate(interaction) {
   await interaction.deferReply({ ephemeral: false });
 
@@ -1111,6 +1230,8 @@ async function handleHelp(interaction) {
       '`/lockdown reason?` - admin-only server lockdown that hides channels from non-admins.',
       '`/archive archive` - admin-only: lock this chat and move it to Archive 1, 2, etc.',
       '`/announce message format channel?` - admin-only official post, with embeds, links, and one attachment.',
+      '`/welcome-setup` and `/booster-setup` - configure branded member-event embeds.',
+      'Welcome/booster templates support `{user}`, `{username}`, `{server}`, and `{memberCount}`.',
       'Punishment and purge commands are mod/senior/admin only. Helpers are excluded.',
     ].join('\n'),
   });
@@ -1170,6 +1291,17 @@ client.once(Events.ClientReady, (readyClient) => {
 client.on(Events.GuildMemberAdd, async (member) => {
   try {
     await handleJoinGuard(member);
+    await sendMemberMessage(member, 'welcome');
+  } catch (error) {
+    console.error(error);
+  }
+});
+
+client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
+  try {
+    if (!oldMember.premiumSinceTimestamp && newMember.premiumSinceTimestamp) {
+      await sendMemberMessage(newMember, 'booster');
+    }
   } catch (error) {
     console.error(error);
   }
@@ -1285,6 +1417,16 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     if (commandName === 'announce') {
       await handleAnnouncement(interaction);
+      return;
+    }
+
+    if (commandName === 'welcome-setup') {
+      await handleMemberMessageSetup(interaction, 'welcome');
+      return;
+    }
+
+    if (commandName === 'booster-setup') {
+      await handleMemberMessageSetup(interaction, 'booster');
       return;
     }
 

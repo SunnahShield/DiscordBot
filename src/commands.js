@@ -153,6 +153,34 @@ const announceCommand = new SlashCommandBuilder()
   )
   .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
 
+const memberMessageSetupCommand = (name, description) =>
+  new SlashCommandBuilder()
+    .setName(name)
+    .setDescription(description)
+    .addChannelOption((option) =>
+      option.setName('channel').setDescription('Channel for these messages').setRequired(true)
+    )
+    .addStringOption((option) =>
+      option
+        .setName('message')
+        .setDescription('Embed text; use {user}, {username}, {server}, or {memberCount}')
+        .setRequired(true)
+        .setMaxLength(2000)
+    )
+    .addStringOption((option) =>
+      option.setName('title').setDescription('Embed title (optional)').setMaxLength(256)
+    )
+    .addStringOption((option) =>
+      option.setName('footer').setDescription('Embed footer text (optional)').setMaxLength(2048)
+    )
+    .addStringOption((option) =>
+      option.setName('image').setDescription('Main embed image URL (optional)').setMaxLength(2000)
+    )
+    .addStringOption((option) =>
+      option.setName('thumbnail').setDescription('Embed thumbnail URL (optional)').setMaxLength(2000)
+    )
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
+
 const commands = [
   new SlashCommandBuilder()
     .setName('add')
@@ -195,6 +223,8 @@ const commands = [
   lockdownCommand('lockdown', 'Hide every channel from non-admin members'),
   archiveCommand,
   announceCommand,
+  memberMessageSetupCommand('welcome-setup', 'Configure the welcome embed sent to new members'),
+  memberMessageSetupCommand('booster-setup', 'Configure the embed sent to new server boosters'),
   new SlashCommandBuilder()
     .setName('help')
     .setDescription('Show bot command help'),

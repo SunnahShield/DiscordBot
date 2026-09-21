@@ -17,6 +17,8 @@ Discord slash-command bot for **Sunnah Shield Points | نقاط درع السن�
 - `/lockdown [reason]`: Admin-only command that hides channels from non-admin members.
 - `/archive <archive>`: Admin-only. Run in a text channel with an archive number (for example, `1`); the bot creates or uses `Archive 1`, renames the channel to start with `arch1-`, moves it there, and removes channel visibility.
 - `/announce <message> <format> [channel] [title] [link] [link_text] [attachment] [image] [thumbnail] [footer]`: Admin-only official posting command. Choose a normal message or a branded embed (accent `#dd6b14`), add a destination, links, one upload, images, and a footer. Message text accepts Discord Markdown, Unicode emojis, and server custom emojis.
+- `/welcome-setup <channel> <message> [title] [footer] [image] [thumbnail]`: Admin-only. Saves a branded `#dd6b14` welcome embed sent whenever a member joins.
+- `/booster-setup <channel> <message> [title] [footer] [image] [thumbnail]`: Admin-only. Saves a matching embed sent when a member begins boosting. Templates can use `{user}`, `{username}`, `{server}`, and `{memberCount}`.
 - `/help`: Show command usage.
 
 Arabic aliases are registered as separate slash commands. Use underscores where Discord does not allow spaces, for example `/شوي_اوي`.
