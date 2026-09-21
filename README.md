@@ -15,6 +15,7 @@ Discord slash-command bot for **Sunnah Shield Points | نقاط درع السن�
 - `/purge <count> [user]`: Delete recent messages in the current channel.
 - `/allpurge <user> <count>`: Delete a user's recent messages across channels.
 - `/lockdown [reason]`: Admin-only command that hides channels from non-admin members.
+- `/archive <archive>`: Admin-only. Run in a text channel with an archive number (for example, `1`); the bot creates or uses `Archive 1`, renames the channel to start with `arch1-`, moves it there, and removes channel visibility.
 - `/help`: Show command usage.
 
 Arabic aliases are registered as separate slash commands. Use underscores where Discord does not allow spaces, for example `/شوي_اوي`.

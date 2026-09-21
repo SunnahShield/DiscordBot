@@ -2,6 +2,7 @@ require('dotenv').config();
 
 const {
   Client,
+  ChannelType,
   Events,
   GatewayIntentBits,
   OverwriteType,
@@ -541,6 +542,104 @@ function canBotManageChannel(channel, botMember) {
   return Boolean(channel.permissionsFor(botMember)?.has(PermissionFlagsBits.ManageChannels));
 }
 
+function archiveCategoryName(archiveNumber) {
+  return `Archive ${archiveNumber}`;
+}
+
+function archivedChannelName(channelName, archiveNumber) {
+  const prefix = `arch${archiveNumber}-`;
+  const lowercaseName = channelName.toLowerCase();
+
+  return lowercaseName.startsWith(prefix) ? channelName : `${prefix}${channelName}`;
+}
+
+async function getOrCreateArchiveCategory(guild, archiveNumber) {
+  const name = archiveCategoryName(archiveNumber);
+  const existingCategory = guild.channels.cache.find(
+    (channel) =>
+      channel.type === ChannelType.GuildCategory && channel.name.toLowerCase() === name.toLowerCase()
+  );
+
+  if (existingCategory) {
+    return existingCategory;
+  }
+
+  return guild.channels.create({
+    name,
+    type: ChannelType.GuildCategory,
+    reason: `Created by /archive for archive ${archiveNumber}`,
+  });
+}
+
+async function removeChannelAccess(channel, botMember, reason) {
+  const overwriteIds = new Set([channel.guild.roles.everyone.id]);
+
+  for (const overwrite of channel.permissionOverwrites.cache.values()) {
+    // The bot must retain an explicit member overwrite if it does not have Administrator.
+    if (overwrite.type === OverwriteType.Member && overwrite.id === botMember?.id) {
+      continue;
+    }
+
+    overwriteIds.add(overwrite.id);
+  }
+
+  for (const targetId of overwriteIds) {
+    await channel.permissionOverwrites.edit(
+      targetId,
+      { ViewChannel: false },
+      { reason }
+    );
+  }
+}
+
+async function handleArchive(interaction) {
+  await interaction.deferReply({ ephemeral: true });
+
+  if (!hasAdminPermission(interaction)) {
+    await interaction.editReply({ content: 'Only administrators can archive chats.' });
+    return;
+  }
+
+  const channel = interaction.channel;
+  const archiveNumber = interaction.options.getInteger('archive', true);
+  const botMember = await fetchMember(interaction.guild, client.user.id);
+
+  if (
+    !channel ||
+    channel.type === ChannelType.GuildCategory ||
+    !channel.isTextBased?.() ||
+    !channel.permissionOverwrites?.edit ||
+    !canBotManageChannel(channel, botMember)
+  ) {
+    await interaction.editReply({
+      content: 'I can only archive a text channel when I have Manage Channels permission.',
+    });
+    return;
+  }
+
+  const auditReason = `Archived by ${interaction.user.tag} in Archive ${archiveNumber}`;
+  const archiveCategory = await getOrCreateArchiveCategory(interaction.guild, archiveNumber);
+
+  if (!canBotManageChannel(archiveCategory, botMember)) {
+    await interaction.editReply({
+      content: 'I created/found the archive category, but I need Manage Channels permission there.',
+    });
+    return;
+  }
+
+  // Lock existing category access too; otherwise a category-level role allow could expose it.
+  await removeChannelAccess(archiveCategory, botMember, auditReason);
+
+  await channel.setName(archivedChannelName(channel.name, archiveNumber), auditReason);
+  await channel.setParent(archiveCategory, { lockPermissions: false, reason: auditReason });
+  // Do this last because it may also remove the bot's own role-based channel access.
+  await removeChannelAccess(channel, botMember, auditReason);
+
+  await interaction.editReply({
+    content: `Archived this channel in **${archiveCategory.name}** and removed its visibility.`,
+  });
+}
+
 async function handleUnmarinate(interaction) {
   await interaction.deferReply({ ephemeral: false });
 
@@ -891,6 +990,7 @@ async function handleHelp(interaction) {
       '`/purge count user?` or `/مسح` - delete recent messages in this channel.',
       '`/allpurge user count` or `/مسح_الكل` - delete a user’s recent messages across channels.',
       '`/lockdown reason?` - admin-only server lockdown that hides channels from non-admins.',
+      '`/archive archive` - admin-only: lock this chat and move it to Archive 1, 2, etc.',
       'Punishment and purge commands are mod/senior/admin only. Helpers are excluded.',
     ].join('\n'),
   });
@@ -1055,6 +1155,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     if (commandName === 'lockdown') {
       await handleLockdown(interaction);
+      return;
+    }
+
+    if (commandName === 'archive') {
+      await handleArchive(interaction);
       return;
     }
 

@@ -94,6 +94,19 @@ const lockdownCommand = (name, description) =>
     .addStringOption(reasonOption)
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
 
+const archiveCommand = new SlashCommandBuilder()
+  .setName('archive')
+  .setDescription('Lock and move this chat into an archive category')
+  .addIntegerOption((option) =>
+    option
+      .setName('archive')
+      .setDescription('Archive number, for example 1 for Archive 1')
+      .setRequired(true)
+      .setMinValue(1)
+      .setMaxValue(999)
+  )
+  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
+
 const commands = [
   new SlashCommandBuilder()
     .setName('add')
@@ -134,6 +147,7 @@ const commands = [
   purgeCommand('purge', 'Delete messages in this channel'),
   allPurgeCommand('allpurge', 'Delete messages from a user across all channels'),
   lockdownCommand('lockdown', 'Hide every channel from non-admin members'),
+  archiveCommand,
   new SlashCommandBuilder()
     .setName('help')
     .setDescription('Show bot command help'),
