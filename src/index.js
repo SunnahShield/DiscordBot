@@ -765,9 +765,9 @@ async function handleAnnouncement(interaction) {
 
 function replaceMemberMessagePlaceholders(value, member) {
   return value
-    // Discord does not reliably resolve mentions inside embeds. The actual mention is
-    // sent as message content below; use a readable name inside the embed itself.
-    .replaceAll('{user}', member.displayName)
+    // Discord does not reliably resolve mentions inside embeds. The real mention is
+    // sent as message content below, so omit this placeholder within the embed.
+    .replaceAll('{user}', '')
     .replaceAll('{username}', member.user.username)
     .replaceAll('{server}', member.guild.name)
     .replaceAll('{memberCount}', String(member.guild.memberCount));
@@ -796,6 +796,8 @@ function createMemberMessageEmbed(config, member) {
 
   if (config.thumbnail) {
     embed.setThumbnail(config.thumbnail);
+  } else {
+    embed.setThumbnail(member.displayAvatarURL({ extension: 'png', size: 512 }));
   }
 
   return embed;
