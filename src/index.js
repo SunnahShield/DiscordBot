@@ -765,10 +765,16 @@ async function handleAnnouncement(interaction) {
 
 function replaceMemberMessagePlaceholders(value, member) {
   return value
-    .replaceAll('{user}', `<@${member.id}>`)
+    // Discord does not reliably resolve mentions inside embeds. The actual mention is
+    // sent as message content below; use a readable name inside the embed itself.
+    .replaceAll('{user}', member.displayName)
     .replaceAll('{username}', member.user.username)
     .replaceAll('{server}', member.guild.name)
     .replaceAll('{memberCount}', String(member.guild.memberCount));
+}
+
+function memberMessageUsesUserPlaceholder(config) {
+  return [config.message, config.title, config.footer].some((value) => value?.includes('{user}'));
 }
 
 function createMemberMessageEmbed(config, member) {
@@ -819,7 +825,12 @@ async function sendMemberMessage(member, type) {
     return false;
   }
 
-  await channel.send({ embeds: [createMemberMessageEmbed(config, member)] });
+  await channel.send({
+    // Put the mention in message content, where Discord resolves it and can notify the member.
+    content: memberMessageUsesUserPlaceholder(config) ? `<@${member.id}>` : undefined,
+    allowedMentions: { users: [member.id] },
+    embeds: [createMemberMessageEmbed(config, member)],
+  });
   return true;
 }
 
