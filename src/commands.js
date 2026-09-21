@@ -226,6 +226,14 @@ const commands = [
   memberMessageSetupCommand('welcome-setup', 'Configure the welcome embed sent to new members'),
   memberMessageSetupCommand('booster-setup', 'Configure the embed sent to new server boosters'),
   new SlashCommandBuilder()
+    .setName('welcome-test')
+    .setDescription('Send the configured welcome embed using your profile as the preview')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+  new SlashCommandBuilder()
+    .setName('booster-test')
+    .setDescription('Send the configured booster embed using your profile as the preview')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+  new SlashCommandBuilder()
     .setName('help')
     .setDescription('Show bot command help'),
 
