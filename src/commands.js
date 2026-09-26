@@ -1,4 +1,4 @@
-const { PermissionFlagsBits, SlashCommandBuilder } = require('discord.js');
+const { ChannelType, PermissionFlagsBits, SlashCommandBuilder } = require('discord.js');
 
 const pointOption = (builder) =>
   builder
@@ -181,6 +181,70 @@ const memberMessageSetupCommand = (name, description) =>
     )
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
 
+const autoReactCommand = new SlashCommandBuilder()
+  .setName('autoreact')
+  .setDescription('Configure automatic reactions in one channel')
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName('setup')
+      .setDescription('Choose what messages receive a reaction')
+      .addStringOption((option) =>
+        option.setName('emoji').setDescription('Emoji to add, such as 👍 or <:name:id>').setRequired(true)
+      )
+      .addChannelOption((option) =>
+        option
+          .setName('channel')
+          .setDescription('Channel to watch')
+          .setRequired(true)
+          .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
+      )
+      .addStringOption((option) =>
+        option
+          .setName('filter')
+          .setDescription('Which messages should receive the reaction')
+          .setRequired(true)
+          .addChoices(
+            { name: 'All messages', value: 'all' },
+            { name: 'Messages with any attachment', value: 'attachments' },
+            { name: 'Images only', value: 'images' },
+            { name: 'Videos only', value: 'videos' }
+          )
+      )
+  )
+  .addSubcommand((subcommand) =>
+    subcommand.setName('disable').setDescription('Turn off automatic reactions for this server')
+  )
+  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
+
+const honeypotCommand = new SlashCommandBuilder()
+  .setName('honeypot')
+  .setDescription('Configure a channel that times out anyone who posts in it')
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName('setup')
+      .setDescription('Enable the honeypot')
+      .addChannelOption((option) =>
+        option
+          .setName('channel')
+          .setDescription('Channel to use as the honeypot')
+          .setRequired(true)
+          .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
+      )
+      .addChannelOption((option) =>
+        option
+          .setName('log_channel')
+          .setDescription('Where honeypot actions are reported')
+          .setRequired(true)
+          .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
+      )
+      .addIntegerOption(durationOption)
+      .addStringOption(unitOption)
+  )
+  .addSubcommand((subcommand) =>
+    subcommand.setName('disable').setDescription('Turn off the honeypot for this server')
+  )
+  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
+
 const commands = [
   new SlashCommandBuilder()
     .setName('add')
@@ -225,6 +289,8 @@ const commands = [
   announceCommand,
   memberMessageSetupCommand('welcome-setup', 'Configure the welcome embed sent to new members'),
   memberMessageSetupCommand('booster-setup', 'Configure the embed sent to new server boosters'),
+  autoReactCommand,
+  honeypotCommand,
   new SlashCommandBuilder()
     .setName('welcome-test')
     .setDescription('Send the configured welcome embed using your profile as the preview')

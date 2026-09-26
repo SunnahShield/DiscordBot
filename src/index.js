@@ -26,6 +26,11 @@ const {
   getMemberMessageConfig,
   setMemberMessageConfig,
 } = require('./member-message-store');
+const {
+  clearAutomationConfig,
+  getAutomationConfig,
+  setAutomationConfig,
+} = require('./automation-store');
 
 const { DISCORD_TOKEN } = process.env;
 
@@ -34,7 +39,12 @@ if (!DISCORD_TOKEN) {
 }
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers],
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+  ],
 });
 
 const POINT_SYMBOL = 'SSP';
@@ -922,6 +932,153 @@ async function handleMemberMessageTest(interaction, type) {
   });
 }
 
+async function handleAutoReact(interaction) {
+  await interaction.deferReply({ ephemeral: true });
+  if (!hasAdminPermission(interaction)) {
+    await interaction.editReply({ content: 'Only administrators can configure automatic reactions.' });
+    return;
+  }
+
+  const subcommand = interaction.options.getSubcommand();
+  if (subcommand === 'disable') {
+    await clearAutomationConfig(interaction.guild.id, 'autoReact');
+    await interaction.editReply({ content: 'Automatic reactions are now disabled.' });
+    return;
+  }
+
+  const channel = interaction.options.getChannel('channel', true);
+  const emoji = interaction.options.getString('emoji', true);
+  const filter = interaction.options.getString('filter', true);
+  await setAutomationConfig(interaction.guild.id, 'autoReact', {
+    channelId: channel.id,
+    emoji,
+    filter,
+  });
+  await interaction.editReply({
+    content: `Automatic reactions are enabled in ${channel}: ${emoji} on ${filter} messages.`,
+  });
+}
+
+async function handleHoneypot(interaction) {
+  await interaction.deferReply({ ephemeral: true });
+  if (!hasAdminPermission(interaction)) {
+    await interaction.editReply({ content: 'Only administrators can configure the honeypot.' });
+    return;
+  }
+
+  const subcommand = interaction.options.getSubcommand();
+  if (subcommand === 'disable') {
+    await clearAutomationConfig(interaction.guild.id, 'honeypot');
+    await interaction.editReply({ content: 'The honeypot is now disabled.' });
+    return;
+  }
+
+  const duration = interaction.options.getInteger('duration', true);
+  const unit = interaction.options.getString('unit', true);
+  const durationMs = getDurationMs(duration, unit);
+  if (durationMs > MAX_TIMEOUT_MS) {
+    await interaction.editReply({ content: 'Discord timeouts can be no longer than 28 days.' });
+    return;
+  }
+
+  const channel = interaction.options.getChannel('channel', true);
+  const logChannel = interaction.options.getChannel('log_channel', true);
+  await setAutomationConfig(interaction.guild.id, 'honeypot', {
+    channelId: channel.id,
+    logChannelId: logChannel.id,
+    durationMs,
+    durationLabel: formatDuration(duration, unit),
+  });
+  await interaction.editReply({
+    content: `Honeypot enabled in ${channel}. Posters will be timed out for ${formatDuration(duration, unit)}, their messages from the previous 24 hours will be deleted where I have access, and actions will be logged in ${logChannel}.`,
+  });
+}
+
+function attachmentMatchesFilter(message, filter) {
+  if (filter === 'all') return true;
+  const attachments = [...message.attachments.values()];
+  if (filter === 'attachments') return attachments.length > 0;
+
+  const prefix = filter === 'images' ? 'image/' : 'video/';
+  const extension = filter === 'images'
+    ? /\.(avif|gif|jpe?g|png|svg|webp)(?:$|\?)/i
+    : /\.(m4v|mov|mp4|webm)(?:$|\?)/i;
+  return attachments.some((attachment) =>
+    attachment.contentType?.startsWith(prefix) || extension.test(attachment.url)
+  );
+}
+
+async function deleteUserMessagesFromLastDay(guild, userId, botMember) {
+  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+  const channels = await guild.channels.fetch();
+  let deletedCount = 0;
+
+  for (const channel of channels.values()) {
+    if (!channel?.messages?.fetch || !canBotManageMessages(channel, botMember)) continue;
+    let before;
+    let reachedCutoff = false;
+    while (!reachedCutoff) {
+      const messages = await channel.messages.fetch({ limit: 100, before }).catch(() => null);
+      if (!messages?.size) break;
+      before = messages.last().id;
+      const candidates = [...messages.values()].filter(
+        (message) => message.author?.id === userId && message.createdTimestamp >= cutoff
+      );
+      if (candidates.length) {
+        const deleted = await channel.bulkDelete(candidates, true).catch(() => null);
+        deletedCount += deleted?.size ?? 0;
+      }
+      reachedCutoff = messages.last().createdTimestamp < cutoff;
+    }
+  }
+  return deletedCount;
+}
+
+const activeHoneypotActions = new Set();
+
+async function handleAutomations(message) {
+  if (!message.guild || message.author.bot) return;
+
+  const autoReact = await getAutomationConfig(message.guild.id, 'autoReact');
+  if (autoReact?.channelId === message.channelId && attachmentMatchesFilter(message, autoReact.filter)) {
+    await message.react(autoReact.emoji).catch(() => null);
+  }
+
+  const honeypot = await getAutomationConfig(message.guild.id, 'honeypot');
+  if (honeypot?.channelId !== message.channelId || activeHoneypotActions.has(message.author.id)) return;
+
+  activeHoneypotActions.add(message.author.id);
+  try {
+    const member = await fetchMember(message.guild, message.author.id);
+    const botMember = await fetchMember(message.guild, client.user.id);
+    if (!member || !botMember || !member.moderatable) {
+      await sendChannelMessage(
+        message.guild,
+        honeypot.logChannelId,
+        `⚠️ Honeypot triggered by ${message.author}, but I cannot timeout this member. Check my role hierarchy and permissions.`
+      );
+      return;
+    }
+
+    await member.timeout(honeypot.durationMs, 'Honeypot triggered');
+    const deletedCount = await deleteUserMessagesFromLastDay(message.guild, message.author.id, botMember);
+    await sendChannelMessage(
+      message.guild,
+      honeypot.logChannelId,
+      `🍯 **Honeypot triggered**\nUser: ${message.author} (${message.author.tag})\nTimeout: ${honeypot.durationLabel}\nMessages deleted from the last 24 hours: ${deletedCount}`
+    );
+  } catch (error) {
+    console.error('Honeypot action failed', error);
+    await sendChannelMessage(
+      message.guild,
+      honeypot.logChannelId,
+      `⚠️ Honeypot triggered by ${message.author}, but the action did not complete. Check my timeout and message-management permissions.`
+    );
+  } finally {
+    activeHoneypotActions.delete(message.author.id);
+  }
+}
+
 async function handleUnmarinate(interaction) {
   await interaction.deferReply({ ephemeral: false });
 
@@ -1276,6 +1433,8 @@ async function handleHelp(interaction) {
       '`/announce message format channel?` - admin-only official post, with embeds, links, and one attachment.',
       '`/welcome-setup` and `/booster-setup` - configure branded member-event embeds.',
       '`/welcome-test` and `/booster-test` - send a preview using your member profile.',
+      '`/autoreact setup emoji channel filter` - automatically react to all, attachment, image, or video messages in one channel. Use `/autoreact disable` to turn it off.',
+      '`/honeypot setup channel log_channel duration unit` - timeout anyone posting in the selected channel, delete their messages from the previous 24 hours, and log the action. Use `/honeypot disable` to turn it off.',
       'Welcome/booster templates support `{user}`, `{username}`, `{server}`, and `{memberCount}`.',
       'Punishment and purge commands are mod/senior/admin only. Helpers are excluded.',
     ].join('\n'),
@@ -1349,6 +1508,14 @@ client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
     }
   } catch (error) {
     console.error(error);
+  }
+});
+
+client.on(Events.MessageCreate, async (message) => {
+  try {
+    await handleAutomations(message);
+  } catch (error) {
+    console.error('Automation handler failed', error);
   }
 });
 
@@ -1482,6 +1649,16 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     if (commandName === 'booster-test') {
       await handleMemberMessageTest(interaction, 'booster');
+      return;
+    }
+
+    if (commandName === 'autoreact') {
+      await handleAutoReact(interaction);
+      return;
+    }
+
+    if (commandName === 'honeypot') {
+      await handleHoneypot(interaction);
       return;
     }
 

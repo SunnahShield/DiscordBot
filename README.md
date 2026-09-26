@@ -20,13 +20,16 @@ Discord slash-command bot for **Sunnah Shield Points | نقاط درع السن�
 - `/welcome-setup <channel> <message> [title] [footer] [image] [thumbnail]`: Admin-only. Saves a branded `#dd6b14` welcome embed sent whenever a member joins.
 - `/booster-setup <channel> <message> [title] [footer] [image] [thumbnail]`: Admin-only. Saves a matching embed sent when a member begins boosting. Templates can use `{user}`, `{username}`, `{server}`, and `{memberCount}`. `{user}` creates a real mention above the embed only. If no thumbnail URL is set, the member's profile picture is used.
 - `/welcome-test` and `/booster-test`: Admin-only. Send the respective configured embed using the command user's profile, so it can be reviewed without a real join or boost.
+- `/autoreact setup <emoji> <channel> <filter>`: Admin-only. Reacts automatically to messages in one selected channel. Filters are all messages, any attachment, images only, or videos only. `/autoreact disable` turns it off.
+- `/honeypot setup <channel> <log_channel> <duration> <unit>`: Admin-only. Anyone who posts in the honeypot channel is timed out, their messages from the last 24 hours are deleted where the bot has access, and the result is reported to the selected log channel. `/honeypot disable` turns it off.
 - `/help`: Show command usage.
 
 Arabic aliases are registered as separate slash commands. Use underscores where Discord does not allow spaces, for example `/شوي_اوي`.
 
 ## Bot Setup Notes
 
-- Enable the `Server Members Intent` for the bot in the Discord Developer Portal so the join guard can reapply punishments.
+- Enable the `Server Members Intent` and `Message Content Intent` for the bot in the Discord Developer Portal. The latter is required for attachment/image/video auto-reactions and honeypot message handling.
+- The bot needs channel permissions to View Channel, Read Message History, Manage Messages, Add Reactions, and Moderate Members. Its role must be above members the honeypot should timeout.
 - Keep `DISCORD_TOKEN`, `CLIENT_ID`, and `GUILD_ID` in your host environment variables.
 
 ## Setup
