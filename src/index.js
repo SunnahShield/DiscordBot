@@ -59,6 +59,7 @@ const STAFF_COMMAND_MIN_LEVEL = 30;
 const BULK_DELETE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 const ANNOUNCEMENT_EMBED_COLOR = 0xdd6b14;
 const inviteCache = new Map();
+const inviteOperations = new Map();
 
 const ROLE_IDS = {
   member: '1149168371984777287',
@@ -999,16 +1000,41 @@ async function handleHoneypot(interaction) {
   });
 }
 
-async function refreshInviteCache(guild) {
-  const invites = await guild.invites.fetch().catch(() => null);
-  if (!invites) return false;
+function queueInviteOperation(guildId, operation) {
+  const previous = inviteOperations.get(guildId) ?? Promise.resolve();
+  const next = previous.then(operation, operation);
+  inviteOperations.set(guildId, next);
+  next.finally(() => {
+    if (inviteOperations.get(guildId) === next) inviteOperations.delete(guildId);
+  }).catch(() => null);
+  return next;
+}
 
-  const vanity = await guild.fetchVanityData().catch(() => null);
-  inviteCache.set(guild.id, {
-    invites: new Map([...invites.values()].map((invite) => [invite.code, invite.uses ?? 0])),
+async function fetchInviteSnapshot(guild) {
+  const [invites, vanity] = await Promise.all([
+    guild.invites.fetch().catch(() => null),
+    guild.fetchVanityData().catch(() => null),
+  ]);
+  if (!invites) return null;
+
+  return {
+    invites: new Map([...invites.values()].map((invite) => [invite.code, {
+      uses: invite.uses ?? 0,
+      maxUses: invite.maxUses ?? 0,
+      inviter: invite.inviter ?? null,
+    }])),
     vanityUses: vanity?.uses ?? null,
+    vanityCode: vanity?.code ?? null,
+  };
+}
+
+async function refreshInviteCache(guild) {
+  return queueInviteOperation(guild.id, async () => {
+    const snapshot = await fetchInviteSnapshot(guild);
+    if (!snapshot) return false;
+    inviteCache.set(guild.id, snapshot);
+    return true;
   });
-  return true;
 }
 
 async function handleInviteTracker(interaction) {
@@ -1034,7 +1060,7 @@ async function handleInviteTracker(interaction) {
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId('invite-test:inviter').setLabel('Test inviter').setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId('invite-test:vanity').setLabel('Test vanity').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId('invite-test:unknown').setLabel('Test unknown').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('invite-test:unknown').setLabel('Test platform source').setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId('invite-test:bot-join').setLabel('Test bot join').setStyle(ButtonStyle.Success),
       new ButtonBuilder().setCustomId('invite-test:leave').setLabel('Test leave').setStyle(ButtonStyle.Danger)
     );
@@ -1151,28 +1177,54 @@ async function reportMemberInvite(member) {
   const config = await getAutomationConfig(member.guild.id, 'inviteTracker');
   if (!config) return;
 
-  const previous = inviteCache.get(member.guild.id);
-  const invites = await member.guild.invites.fetch().catch(() => null);
-  const vanity = await member.guild.fetchVanityData().catch(() => null);
-  let source = 'an unknown invite or a join that could not be attributed';
-  if (invites && previous) {
-    const usedInvite = invites.find((invite) => (invite.uses ?? 0) > (previous.invites.get(invite.code) ?? 0));
-    if (usedInvite) {
-      source = usedInvite.inviter
-        ? `${usedInvite.inviter} using invite \`${usedInvite.code}\` (${usedInvite.uses ?? 0} total uses)`
-        : `invite \`${usedInvite.code}\` (${usedInvite.uses ?? 0} total uses)`;
-    } else if (vanity?.uses != null && previous.vanityUses != null && vanity.uses > previous.vanityUses) {
-      source = `the server vanity invite \`${vanity.code}\``;
+  await queueInviteOperation(member.guild.id, async () => {
+    const previous = inviteCache.get(member.guild.id);
+    const current = await fetchInviteSnapshot(member.guild);
+    let source = 'a Discord join source that does not expose an invite code (for example Discovery, Server Tag, or Join Server), or an unavailable/deleted invite';
+
+    if (!current) {
+      source = 'an invite source that could not be checked because I cannot read this server\'s invites';
+    } else if (!previous) {
+      // A baseline is required to compare invite uses; do not pretend this first join is unknown.
+      source = 'an invite source that could not be attributed because invite tracking had no earlier usage baseline';
+      inviteCache.set(member.guild.id, current);
+    } else {
+      const usedInvite = [...current.invites.entries()]
+        .map(([code, invite]) => ({ code, invite, previous: previous.invites.get(code) }))
+        .filter(({ invite, previous: oldInvite }) => invite.uses > (oldInvite?.uses ?? 0))
+        .sort((a, b) => (b.invite.uses - (b.previous?.uses ?? 0)) - (a.invite.uses - (a.previous?.uses ?? 0)))[0];
+
+      if (usedInvite) {
+        const { code, invite, previous: oldInvite } = usedInvite;
+        source = invite.inviter
+          ? `${invite.inviter} using invite \`${code}\` (${invite.uses} total uses)`
+          : `invite \`${code}\` (${invite.uses} total uses)`;
+        // Consume exactly one use. This lets consecutive joins using the same personal
+        // invite be attributed individually even when Discord has already counted both.
+        previous.invites.set(code, { ...invite, uses: (oldInvite?.uses ?? 0) + 1 });
+        inviteCache.set(member.guild.id, previous);
+      } else if (current.vanityUses != null && previous.vanityUses != null && current.vanityUses > previous.vanityUses) {
+        source = `the server vanity invite \`${current.vanityCode ?? 'vanity'}\``;
+        previous.vanityUses += 1;
+        inviteCache.set(member.guild.id, previous);
+      } else {
+        const expiredOneUseInvite = [...previous.invites.entries()].find(([code, invite]) =>
+          !current.invites.has(code) && invite.maxUses > 0 && invite.uses + 1 >= invite.maxUses
+        );
+        if (expiredOneUseInvite) {
+          const [code, invite] = expiredOneUseInvite;
+          source = invite.inviter
+            ? `possibly ${invite.inviter} using one-use invite \`${code}\` (the code disappeared after the join)`
+            : `possibly one-use invite \`${code}\` (the code disappeared after the join)`;
+        }
+        // No invite counter moved, so retain no stale counts for a later join.
+        inviteCache.set(member.guild.id, current);
+      }
     }
-  }
-  if (invites) {
-    inviteCache.set(member.guild.id, {
-      invites: new Map([...invites.values()].map((invite) => [invite.code, invite.uses ?? 0])),
-      vanityUses: vanity?.uses ?? null,
-    });
-  }
-  const type = member.user.bot ? 'Bot added' : 'Member joined';
-  await sendChannelMessage(member.guild, config.channelId, `📨 **${type}**: ${member} joined via ${source}.`);
+
+    const type = member.user.bot ? 'Bot added' : 'Member joined';
+    await sendChannelMessage(member.guild, config.channelId, `📨 **${type}**: ${member} joined via ${source}.`);
+  });
 }
 
 async function reportMemberLeave(member) {
@@ -1714,7 +1766,8 @@ client.on(Events.InviteCreate, (invite) => {
 });
 
 client.on(Events.InviteDelete, (invite) => {
-  refreshInviteCache(invite.guild).catch((error) => console.error('Could not update invite cache', error));
+  // A one-use personal invite disappears as it is consumed. Keep the prior
+  // snapshot until the next join so that consumption can still be recognized.
 });
 
 client.on(Events.GuildCreate, (guild) => {
