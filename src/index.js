@@ -43,6 +43,7 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.GuildInvites,
     GatewayIntentBits.MessageContent,
   ],
 });
@@ -54,6 +55,7 @@ const MAX_TIMEOUT_MS = 28 * 24 * 60 * 60 * 1000;
 const STAFF_COMMAND_MIN_LEVEL = 30;
 const BULK_DELETE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 const ANNOUNCEMENT_EMBED_COLOR = 0xdd6b14;
+const inviteCache = new Map();
 
 const ROLE_IDS = {
   member: '1149168371984777287',
@@ -994,6 +996,157 @@ async function handleHoneypot(interaction) {
   });
 }
 
+async function refreshInviteCache(guild) {
+  const invites = await guild.invites.fetch().catch(() => null);
+  if (!invites) return false;
+
+  const vanity = await guild.fetchVanityData().catch(() => null);
+  inviteCache.set(guild.id, {
+    invites: new Map([...invites.values()].map((invite) => [invite.code, invite.uses ?? 0])),
+    vanityUses: vanity?.uses ?? null,
+  });
+  return true;
+}
+
+async function handleInviteTracker(interaction) {
+  await interaction.deferReply({ ephemeral: true });
+  if (!hasAdminPermission(interaction)) {
+    await interaction.editReply({ content: 'Only administrators can configure invite tracking.' });
+    return;
+  }
+
+  if (interaction.options.getSubcommand() === 'disable') {
+    await clearAutomationConfig(interaction.guild.id, 'inviteTracker');
+    await interaction.editReply({ content: 'Invite tracking reports are now disabled.' });
+    return;
+  }
+
+  const channel = interaction.options.getChannel('channel', true);
+  const cached = await refreshInviteCache(interaction.guild);
+  await setAutomationConfig(interaction.guild.id, 'inviteTracker', { channelId: channel.id });
+  await interaction.editReply({
+    content: cached
+      ? `Invite tracking is enabled. New-member join attribution will be reported in ${channel}.`
+      : `Invite tracking is enabled for ${channel}, but I could not read this server's invites. Give me the Manage Server permission, then run this setup command again.`,
+  });
+}
+
+async function handleRoleTag(interaction) {
+  await interaction.deferReply({ ephemeral: true });
+  if (!hasAdminPermission(interaction)) {
+    await interaction.editReply({ content: 'Only administrators can configure role-tag rules.' });
+    return;
+  }
+
+  const subcommand = interaction.options.getSubcommand();
+  const currentRules = (await getAutomationConfig(interaction.guild.id, 'roleTags')) ?? [];
+  if (subcommand === 'list') {
+    if (!currentRules.length) {
+      await interaction.editReply({ content: 'No role-tag rules are configured.' });
+      return;
+    }
+    await interaction.editReply({
+      content: currentRules
+        .map((rule) => `• \`${rule.tag}\` → ${rule.action === 'role' ? `<@&${rule.roleId}>` : rule.action}`)
+        .join('\n'),
+    });
+    return;
+  }
+
+  const tag = interaction.options.getString('tag', true).trim();
+  if (!tag) {
+    await interaction.editReply({ content: 'The tag cannot be empty.' });
+    return;
+  }
+
+  if (subcommand === 'remove') {
+    const rules = currentRules.filter((rule) => rule.tag.toLowerCase() !== tag.toLowerCase());
+    await setAutomationConfig(interaction.guild.id, 'roleTags', rules);
+    await interaction.editReply({ content: `Removed ${currentRules.length - rules.length} role-tag rule(s) for \`${tag}\`.` });
+    return;
+  }
+
+  const action = interaction.options.getString('action', true);
+  const role = interaction.options.getRole('role', false);
+  if (action === 'role' && !role) {
+    await interaction.editReply({ content: 'Choose a role when using the give-a-role action.' });
+    return;
+  }
+  if (action === 'role' && role.managed) {
+    await interaction.editReply({ content: 'That role is managed by an integration and cannot be assigned.' });
+    return;
+  }
+
+  const rule = { tag, action, roleId: action === 'role' ? role.id : null };
+  const rules = [
+    ...currentRules.filter((existing) => existing.tag.toLowerCase() !== tag.toLowerCase()),
+    rule,
+  ];
+  await setAutomationConfig(interaction.guild.id, 'roleTags', rules);
+  await interaction.editReply({
+    content: `Rule saved: members whose username or display name contains \`${tag}\` will be ${action === 'role' ? `given ${role}` : `${action}ed`}.`,
+  });
+}
+
+function memberMatchesTag(member, tag) {
+  const values = [member.user.username, member.user.globalName, member.nickname, member.displayName]
+    .filter(Boolean)
+    .map((value) => value.toLocaleLowerCase());
+  return values.some((value) => value.includes(tag.toLocaleLowerCase()));
+}
+
+async function enforceRoleTags(member) {
+  if (member.user.bot) return;
+  const rules = (await getAutomationConfig(member.guild.id, 'roleTags')) ?? [];
+  for (const rule of rules) {
+    if (!memberMatchesTag(member, rule.tag)) continue;
+    if (rule.action === 'role') {
+      const role = member.guild.roles.cache.get(rule.roleId) ?? await member.guild.roles.fetch(rule.roleId).catch(() => null);
+      if (role && !member.roles.cache.has(role.id)) {
+        await member.roles.add(role, `Role-tag rule matched: ${rule.tag}`).catch((error) =>
+          console.error(`Could not add role-tag role ${role.id}`, error)
+        );
+      }
+      continue;
+    }
+    if (rule.action === 'kick' && member.kickable) {
+      await member.kick(`Role-tag rule matched: ${rule.tag}`).catch((error) => console.error('Role-tag kick failed', error));
+      return;
+    }
+    if (rule.action === 'ban' && member.bannable) {
+      await member.ban({ reason: `Role-tag rule matched: ${rule.tag}` }).catch((error) => console.error('Role-tag ban failed', error));
+      return;
+    }
+  }
+}
+
+async function reportMemberInvite(member) {
+  const config = await getAutomationConfig(member.guild.id, 'inviteTracker');
+  if (!config) return;
+
+  const previous = inviteCache.get(member.guild.id);
+  const invites = await member.guild.invites.fetch().catch(() => null);
+  const vanity = await member.guild.fetchVanityData().catch(() => null);
+  let source = 'an unknown invite or a join that could not be attributed';
+  if (invites && previous) {
+    const usedInvite = invites.find((invite) => (invite.uses ?? 0) > (previous.invites.get(invite.code) ?? 0));
+    if (usedInvite) {
+      source = usedInvite.inviter
+        ? `${usedInvite.inviter} using invite \`${usedInvite.code}\` (${usedInvite.uses ?? 0} total uses)`
+        : `invite \`${usedInvite.code}\` (${usedInvite.uses ?? 0} total uses)`;
+    } else if (vanity?.uses != null && previous.vanityUses != null && vanity.uses > previous.vanityUses) {
+      source = `the server vanity invite \`${vanity.code}\``;
+    }
+  }
+  if (invites) {
+    inviteCache.set(member.guild.id, {
+      invites: new Map([...invites.values()].map((invite) => [invite.code, invite.uses ?? 0])),
+      vanityUses: vanity?.uses ?? null,
+    });
+  }
+  await sendChannelMessage(member.guild, config.channelId, `📨 ${member} joined via ${source}.`);
+}
+
 function attachmentMatchesFilter(message, filter) {
   if (filter === 'all') return true;
   const attachments = [...message.attachments.values()];
@@ -1435,6 +1588,8 @@ async function handleHelp(interaction) {
       '`/welcome-test` and `/booster-test` - send a preview using your member profile.',
       '`/autoreact setup emoji channel filter` - automatically react to all, attachment, image, or video messages in one channel. Use `/autoreact disable` to turn it off.',
       '`/honeypot setup channel log_channel duration unit` - timeout anyone posting in the selected channel, delete their messages from the previous 24 hours, and log the action. Use `/honeypot disable` to turn it off.',
+      '`/invites setup channel` - report whether each member joined through an invite, an inviter, or the server vanity URL. Use `/invites disable` to turn it off.',
+      '`/roletag add tag action role?` - match text in usernames/display names and give a role, kick, or ban. Use `/roletag list` or `/roletag remove tag` to manage rules.',
       'Welcome/booster templates support `{user}`, `{username}`, `{server}`, and `{memberCount}`.',
       'Punishment and purge commands are mod/senior/admin only. Helpers are excluded.',
     ].join('\n'),
@@ -1490,11 +1645,28 @@ async function handleJoinGuard(member) {
 
 client.once(Events.ClientReady, (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}`);
+  for (const guild of readyClient.guilds.cache.values()) {
+    refreshInviteCache(guild).catch((error) => console.error(`Could not cache invites for ${guild.id}`, error));
+  }
+});
+
+client.on(Events.InviteCreate, (invite) => {
+  refreshInviteCache(invite.guild).catch((error) => console.error('Could not update invite cache', error));
+});
+
+client.on(Events.InviteDelete, (invite) => {
+  refreshInviteCache(invite.guild).catch((error) => console.error('Could not update invite cache', error));
+});
+
+client.on(Events.GuildCreate, (guild) => {
+  refreshInviteCache(guild).catch((error) => console.error(`Could not cache invites for ${guild.id}`, error));
 });
 
 client.on(Events.GuildMemberAdd, async (member) => {
   try {
     await handleJoinGuard(member);
+    await enforceRoleTags(member);
+    await reportMemberInvite(member);
     await sendMemberMessage(member, 'welcome');
   } catch (error) {
     console.error(error);
@@ -1503,6 +1675,13 @@ client.on(Events.GuildMemberAdd, async (member) => {
 
 client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
   try {
+    if (
+      oldMember.user.username !== newMember.user.username ||
+      oldMember.user.globalName !== newMember.user.globalName ||
+      oldMember.nickname !== newMember.nickname
+    ) {
+      await enforceRoleTags(newMember);
+    }
     if (!oldMember.premiumSinceTimestamp && newMember.premiumSinceTimestamp) {
       await sendMemberMessage(newMember, 'booster');
     }
@@ -1659,6 +1838,16 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     if (commandName === 'honeypot') {
       await handleHoneypot(interaction);
+      return;
+    }
+
+    if (commandName === 'invites') {
+      await handleInviteTracker(interaction);
+      return;
+    }
+
+    if (commandName === 'roletag') {
+      await handleRoleTag(interaction);
       return;
     }
 

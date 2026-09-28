@@ -22,14 +22,16 @@ Discord slash-command bot for **Sunnah Shield Points | نقاط درع السن�
 - `/welcome-test` and `/booster-test`: Admin-only. Send the respective configured embed using the command user's profile, so it can be reviewed without a real join or boost.
 - `/autoreact setup <emoji> <channel> <filter>`: Admin-only. Reacts automatically to messages in one selected channel. Filters are all messages, any attachment, images only, or videos only. `/autoreact disable` turns it off.
 - `/honeypot setup <channel> <log_channel> <duration> <unit>`: Admin-only. Anyone who posts in the honeypot channel is timed out, their messages from the last 24 hours are deleted where the bot has access, and the result is reported to the selected log channel. `/honeypot disable` turns it off.
+- `/invites setup <channel>`: Admin-only. Reports every join to the selected channel, identifying the inviter and invite code when possible, the vanity invite when used, or an unknown source. `/invites disable` turns it off.
+- `/roletag add <tag> <action> [role]`: Admin-only. Matches text in a member's username or server/global display name on joining or changing their name. The action can give a role, kick, or ban. The role is required only for the give-role action. Use `/roletag list` and `/roletag remove <tag>` to manage rules.
 - `/help`: Show command usage.
 
 Arabic aliases are registered as separate slash commands. Use underscores where Discord does not allow spaces, for example `/شوي_اوي`.
 
 ## Bot Setup Notes
 
-- Enable the `Server Members Intent` and `Message Content Intent` for the bot in the Discord Developer Portal. The latter is required for attachment/image/video auto-reactions and honeypot message handling.
-- The bot needs channel permissions to View Channel, Read Message History, Manage Messages, Add Reactions, and Moderate Members. Its role must be above members the honeypot should timeout.
+- Enable the `Server Members Intent` and `Message Content Intent` for the bot in the Discord Developer Portal. The latter is required for attachment/image/video auto-reactions and honeypot message handling. Invite tracking also uses the Guild Invites gateway intent configured in the bot code.
+- The bot needs channel permissions to View Channel, Read Message History, Manage Messages, Add Reactions, and Moderate Members. Its role must be above members the honeypot or role-tag rules should act on. Invite tracking also requires **Manage Server** to read invite usage and vanity-invite data.
 - Keep `DISCORD_TOKEN`, `CLIENT_ID`, and `GUILD_ID` in your host environment variables.
 
 ## Setup

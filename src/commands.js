@@ -245,6 +245,64 @@ const honeypotCommand = new SlashCommandBuilder()
   )
   .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
 
+const inviteTrackerCommand = new SlashCommandBuilder()
+  .setName('invites')
+  .setDescription('Configure join invite tracking')
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName('setup')
+      .setDescription('Send invite attribution for new members to a channel')
+      .addChannelOption((option) =>
+        option
+          .setName('channel')
+          .setDescription('Channel for join-invite reports')
+          .setRequired(true)
+          .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
+      )
+  )
+  .addSubcommand((subcommand) =>
+    subcommand.setName('disable').setDescription('Turn off invite tracking reports')
+  )
+  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
+
+const roleTagCommand = new SlashCommandBuilder()
+  .setName('roletag')
+  .setDescription('Apply moderation actions when a member name contains a tag')
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName('add')
+      .setDescription('Add a tag rule')
+      .addStringOption((option) =>
+        option.setName('tag').setDescription('Text to find in usernames or display names').setRequired(true).setMaxLength(100)
+      )
+      .addStringOption((option) =>
+        option
+          .setName('action')
+          .setDescription('What happens when the tag matches')
+          .setRequired(true)
+          .addChoices(
+            { name: 'Give a role', value: 'role' },
+            { name: 'Kick the member', value: 'kick' },
+            { name: 'Ban the member', value: 'ban' }
+          )
+      )
+      .addRoleOption((option) =>
+        option.setName('role').setDescription('Role to give (required only for the role action)')
+      )
+  )
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName('remove')
+      .setDescription('Remove every rule for one tag')
+      .addStringOption((option) =>
+        option.setName('tag').setDescription('Exact tag text to remove').setRequired(true).setMaxLength(100)
+      )
+  )
+  .addSubcommand((subcommand) =>
+    subcommand.setName('list').setDescription('List the configured tag rules')
+  )
+  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
+
 const commands = [
   new SlashCommandBuilder()
     .setName('add')
@@ -291,6 +349,8 @@ const commands = [
   memberMessageSetupCommand('booster-setup', 'Configure the embed sent to new server boosters'),
   autoReactCommand,
   honeypotCommand,
+  inviteTrackerCommand,
+  roleTagCommand,
   new SlashCommandBuilder()
     .setName('welcome-test')
     .setDescription('Send the configured welcome embed using your profile as the preview')
