@@ -1231,7 +1231,7 @@ async function reportMemberLeave(member) {
   const config = await getAutomationConfig(member.guild.id, 'inviteTracker');
   if (!config) return;
   const type = member.user.bot ? 'Bot removed' : 'Member left';
-  await sendChannelMessage(member.guild, config.channelId, `📤 **${type}**: ${member.user.tag} (${member.id}) left the server.`);
+  await sendChannelMessage(member.guild, config.channelId, `📤 **${type}**: <@${member.id}> (${member.user.tag} / ${member.id}) left the server.`);
 }
 
 async function handleInviteTestButton(interaction) {
@@ -1250,7 +1250,7 @@ async function handleInviteTestButton(interaction) {
     vanity: `📨 **Member joined**: ${interaction.user} joined via the server vanity invite \`vanity-url\`.`,
     unknown: `📨 **Member joined**: ${interaction.user} joined via an unknown invite or a join that could not be attributed.`,
     'bot-join': `📨 **Bot added**: Example Bot joined via ${interaction.user} using invite \`example\` (12 total uses).`,
-    leave: `📤 **Member left**: ${interaction.user.tag} (${interaction.user.id}) left the server.`,
+    leave: `📤 **Member left**: ${interaction.user} (${interaction.user.tag} / ${interaction.user.id}) left the server.`,
     'bot-leave': '📤 **Bot removed**: Example Bot (000000000000000000) left the server.',
   };
   await sendChannelMessage(interaction.guild, config.channelId, samples[scenario]);
