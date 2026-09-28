@@ -263,6 +263,9 @@ const inviteTrackerCommand = new SlashCommandBuilder()
   .addSubcommand((subcommand) =>
     subcommand.setName('disable').setDescription('Turn off invite tracking reports')
   )
+  .addSubcommand((subcommand) =>
+    subcommand.setName('test').setDescription('Show test buttons for every invite-tracker scenario')
+  )
   .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
 
 const roleTagCommand = new SlashCommandBuilder()

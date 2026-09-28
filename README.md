@@ -22,7 +22,7 @@ Discord slash-command bot for **Sunnah Shield Points | نقاط درع السن�
 - `/welcome-test` and `/booster-test`: Admin-only. Send the respective configured embed using the command user's profile, so it can be reviewed without a real join or boost.
 - `/autoreact setup <emoji> <channel> <filter>`: Admin-only. Reacts automatically to messages in one selected channel. Filters are all messages, any attachment, images only, or videos only. `/autoreact disable` turns it off.
 - `/honeypot setup <channel> <log_channel> <duration> <unit>`: Admin-only. Anyone who posts in the honeypot channel is timed out, their messages from the last 24 hours are deleted where the bot has access, and the result is reported to the selected log channel. `/honeypot disable` turns it off.
-- `/invites setup <channel>`: Admin-only. Reports every join to the selected channel, identifying the inviter and invite code when possible, the vanity invite when used, or an unknown source. `/invites disable` turns it off.
+- `/invites setup <channel>`: Admin-only. Reports every join and leave to the selected channel, identifying the inviter and invite code when possible, the vanity invite when used, or an unknown source. Bot additions and removals are explicitly labelled. Use `/invites test` for administrator-only test buttons covering inviter, vanity, unknown, member leave, bot-added, and bot-removed scenarios. `/invites disable` turns it off.
 - `/roletag add <tag> <action> [role]`: Admin-only. Matches text in a member's username or server/global display name on joining or changing their name. The action can give a role, kick, or ban. The role is required only for the give-role action. Use `/roletag list` and `/roletag remove <tag>` to manage rules.
 - `/help`: Show command usage.
 

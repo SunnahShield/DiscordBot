@@ -2,6 +2,9 @@ require('dotenv').config();
 
 const {
   Client,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
   ChannelType,
   EmbedBuilder,
   Events,
@@ -1015,9 +1018,33 @@ async function handleInviteTracker(interaction) {
     return;
   }
 
-  if (interaction.options.getSubcommand() === 'disable') {
+  const subcommand = interaction.options.getSubcommand();
+  if (subcommand === 'disable') {
     await clearAutomationConfig(interaction.guild.id, 'inviteTracker');
     await interaction.editReply({ content: 'Invite tracking reports are now disabled.' });
+    return;
+  }
+
+  if (subcommand === 'test') {
+    const config = await getAutomationConfig(interaction.guild.id, 'inviteTracker');
+    if (!config) {
+      await interaction.editReply({ content: 'Set up invite tracking first with `/invites setup`.' });
+      return;
+    }
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('invite-test:inviter').setLabel('Test inviter').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId('invite-test:vanity').setLabel('Test vanity').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('invite-test:unknown').setLabel('Test unknown').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('invite-test:bot-join').setLabel('Test bot join').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId('invite-test:leave').setLabel('Test leave').setStyle(ButtonStyle.Danger)
+    );
+    const botLeaveRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('invite-test:bot-leave').setLabel('Test bot removal').setStyle(ButtonStyle.Danger)
+    );
+    await interaction.editReply({
+      content: 'Invite tracker test panel — only administrators can trigger these test reports.',
+      components: [row, botLeaveRow],
+    });
     return;
   }
 
@@ -1144,7 +1171,38 @@ async function reportMemberInvite(member) {
       vanityUses: vanity?.uses ?? null,
     });
   }
-  await sendChannelMessage(member.guild, config.channelId, `📨 ${member} joined via ${source}.`);
+  const type = member.user.bot ? 'Bot added' : 'Member joined';
+  await sendChannelMessage(member.guild, config.channelId, `📨 **${type}**: ${member} joined via ${source}.`);
+}
+
+async function reportMemberLeave(member) {
+  const config = await getAutomationConfig(member.guild.id, 'inviteTracker');
+  if (!config) return;
+  const type = member.user.bot ? 'Bot removed' : 'Member left';
+  await sendChannelMessage(member.guild, config.channelId, `📤 **${type}**: ${member.user.tag} (${member.id}) left the server.`);
+}
+
+async function handleInviteTestButton(interaction) {
+  if (!hasAdminPermission(interaction)) {
+    await interaction.reply({ content: 'Only administrators can use invite tracker tests.', ephemeral: true });
+    return;
+  }
+  const config = await getAutomationConfig(interaction.guild.id, 'inviteTracker');
+  if (!config) {
+    await interaction.reply({ content: 'Invite tracking is not configured.', ephemeral: true });
+    return;
+  }
+  const scenario = interaction.customId.split(':')[1];
+  const samples = {
+    inviter: `📨 **Member joined**: ${interaction.user} joined via ${interaction.user} using invite \`example\` (12 total uses).`,
+    vanity: `📨 **Member joined**: ${interaction.user} joined via the server vanity invite \`vanity-url\`.`,
+    unknown: `📨 **Member joined**: ${interaction.user} joined via an unknown invite or a join that could not be attributed.`,
+    'bot-join': `📨 **Bot added**: Example Bot joined via ${interaction.user} using invite \`example\` (12 total uses).`,
+    leave: `📤 **Member left**: ${interaction.user.tag} (${interaction.user.id}) left the server.`,
+    'bot-leave': '📤 **Bot removed**: Example Bot (000000000000000000) left the server.',
+  };
+  await sendChannelMessage(interaction.guild, config.channelId, samples[scenario]);
+  await interaction.reply({ content: `Sent the ${scenario.replace('-', ' ')} test to <#${config.channelId}>.`, ephemeral: true });
 }
 
 function attachmentMatchesFilter(message, filter) {
@@ -1589,6 +1647,7 @@ async function handleHelp(interaction) {
       '`/autoreact setup emoji channel filter` - automatically react to all, attachment, image, or video messages in one channel. Use `/autoreact disable` to turn it off.',
       '`/honeypot setup channel log_channel duration unit` - timeout anyone posting in the selected channel, delete their messages from the previous 24 hours, and log the action. Use `/honeypot disable` to turn it off.',
       '`/invites setup channel` - report whether each member joined through an invite, an inviter, or the server vanity URL. Use `/invites disable` to turn it off.',
+      '`/invites test` - show administrator-only buttons to test inviter, vanity, unknown, member leave, bot-added, and bot-removed reports.',
       '`/roletag add tag action role?` - match text in usernames/display names and give a role, kick, or ban. Use `/roletag list` or `/roletag remove tag` to manage rules.',
       'Welcome/booster templates support `{user}`, `{username}`, `{server}`, and `{memberCount}`.',
       'Punishment and purge commands are mod/senior/admin only. Helpers are excluded.',
@@ -1673,6 +1732,14 @@ client.on(Events.GuildMemberAdd, async (member) => {
   }
 });
 
+client.on(Events.GuildMemberRemove, async (member) => {
+  try {
+    await reportMemberLeave(member);
+  } catch (error) {
+    console.error('Leave report failed', error);
+  }
+});
+
 client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
   try {
     if (
@@ -1699,6 +1766,16 @@ client.on(Events.MessageCreate, async (message) => {
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
+  if (interaction.isButton() && interaction.customId.startsWith('invite-test:')) {
+    try {
+      await handleInviteTestButton(interaction);
+    } catch (error) {
+      console.error('Invite tracker test failed', error);
+      await interaction.reply({ content: 'Could not send the invite tracker test.', ephemeral: true }).catch(() => null);
+    }
+    return;
+  }
+
   if (!interaction.isChatInputCommand()) {
     return;
   }
