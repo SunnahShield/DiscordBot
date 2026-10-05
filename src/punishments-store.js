@@ -10,7 +10,7 @@ async function ensureStore() {
   try {
     await fs.access(PUNISHMENTS_FILE);
   } catch {
-    await fs.writeFile(PUNISHMENTS_FILE, JSON.stringify({ users: {} }, null, 2));
+    await fs.writeFile(PUNISHMENTS_FILE, JSON.stringify({ guilds: {} }, null, 2));
   }
 }
 
@@ -25,27 +25,29 @@ async function writeStore(store) {
   await fs.writeFile(PUNISHMENTS_FILE, JSON.stringify(store, null, 2));
 }
 
-async function getActivePunishment(userId) {
+async function getActivePunishment(guildId, userId) {
   const store = await readStore();
-  return store.users[userId] ?? null;
+  return store.guilds?.[guildId]?.[userId] ?? null;
 }
 
-async function setActivePunishment(userId, record) {
+async function setActivePunishment(guildId, userId, record) {
   const store = await readStore();
-  store.users[userId] = record;
+  store.guilds ??= {};
+  store.guilds[guildId] ??= {};
+  store.guilds[guildId][userId] = record;
   await writeStore(store);
   return record;
 }
 
-async function clearActivePunishment(userId) {
+async function clearActivePunishment(guildId, userId) {
   const store = await readStore();
-  delete store.users[userId];
+  if (store.guilds?.[guildId]) delete store.guilds[guildId][userId];
   await writeStore(store);
 }
 
-async function listActivePunishments() {
+async function listActivePunishments(guildId) {
   const store = await readStore();
-  return store.users;
+  return store.guilds?.[guildId] ?? {};
 }
 
 module.exports = {

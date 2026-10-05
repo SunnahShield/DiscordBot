@@ -187,7 +187,14 @@ function getActorLevel(member) {
 }
 
 function hasStaffCommandPermission(member) {
-  return getActorLevel(member) >= STAFF_COMMAND_MIN_LEVEL;
+  return member.permissions.has(PermissionFlagsBits.Administrator) || getActorLevel(member) >= STAFF_COMMAND_MIN_LEVEL;
+}
+
+async function getGuildPunishment(guildId, punishmentKey) {
+  const configured = await getAutomationConfig(guildId, 'punishments');
+  const punishment = configured?.[punishmentKey];
+  if (!punishment?.roleId) return null;
+  return { ...PUNISHMENTS[punishmentKey], ...punishment };
 }
 
 function getPunishmentAnnounceChannelId(commandName) {
@@ -237,8 +244,8 @@ async function fetchMember(guild, userId) {
   }
 }
 
-async function removeBaseRoles(member) {
-  const removedRoleIds = BASE_ROLE_IDS.filter((roleId) => member.roles.cache.has(roleId));
+async function removeBaseRoles(member, baseRoleIds = BASE_ROLE_IDS) {
+  const removedRoleIds = baseRoleIds.filter((roleId) => member.roles.cache.has(roleId));
 
   if (removedRoleIds.length) {
     await member.roles.remove(removedRoleIds);
@@ -292,6 +299,10 @@ function canActOnTarget(actorMember, targetMember, targetUserId) {
     return false;
   }
 
+  if (actorMember.permissions.has(PermissionFlagsBits.Administrator)) {
+    return targetMember?.id !== actorMember.guild.ownerId;
+  }
+
   if (targetMember?.roles.cache.has(ROLE_IDS.staff)) {
     return false;
   }
@@ -340,13 +351,18 @@ async function requireStaff(interaction, deferred = false) {
 async function applyPunishment(interaction, punishmentKey) {
   await interaction.deferReply({ ephemeral: false });
 
-  const punishment = PUNISHMENTS[punishmentKey];
   const targetUser = interaction.options.getUser('user', true);
   const reason = getReason(interaction);
   const actorMember = await requireStaff(interaction, true);
   const targetMember = await fetchMember(interaction.guild, targetUser.id);
 
   if (!actorMember) {
+    return;
+  }
+
+  const punishment = await getGuildPunishment(interaction.guild.id, punishmentKey);
+  if (!punishment) {
+    await interaction.editReply({ content: `Configure this punishment first with \`/punishments setup type:${punishmentKey}\`.` });
     return;
   }
 
@@ -357,8 +373,8 @@ async function applyPunishment(interaction, punishmentKey) {
     return;
   }
 
-  const activePunishment = await getActivePunishment(targetUser.id);
-  const removedRoleIdsThisAction = targetMember ? await removeBaseRoles(targetMember) : [];
+  const activePunishment = await getActivePunishment(interaction.guild.id, targetUser.id);
+  const removedRoleIdsThisAction = targetMember ? await removeBaseRoles(targetMember, punishment.baseRoleIds ?? []) : [];
   const savedRoleIds = activePunishment?.savedRoleIds ?? removedRoleIdsThisAction;
 
   if (activePunishment?.roleId && targetMember) {
@@ -369,7 +385,7 @@ async function applyPunishment(interaction, punishmentKey) {
     await addRoles(targetMember, [punishment.roleId]);
   }
 
-  await setActivePunishment(targetUser.id, {
+  await setActivePunishment(interaction.guild.id, targetUser.id, {
     type: punishmentKey,
     roleId: punishment.roleId,
     savedRoleIds: unique(savedRoleIds),
@@ -388,12 +404,17 @@ async function applyPunishment(interaction, punishmentKey) {
 async function undoPunishment(interaction, punishmentKey) {
   await interaction.deferReply({ ephemeral: false });
 
-  const punishment = PUNISHMENTS[punishmentKey];
   const targetUser = interaction.options.getUser('user', true);
   const actorMember = await requireStaff(interaction, true);
   const targetMember = await fetchMember(interaction.guild, targetUser.id);
 
   if (!actorMember) {
+    return;
+  }
+
+  const punishment = await getGuildPunishment(interaction.guild.id, punishmentKey);
+  if (!punishment) {
+    await interaction.editReply({ content: `Configure this punishment first with \`/punishments setup type:${punishmentKey}\`.` });
     return;
   }
 
@@ -404,7 +425,7 @@ async function undoPunishment(interaction, punishmentKey) {
     return;
   }
 
-  const activePunishment = await getActivePunishment(targetUser.id);
+  const activePunishment = await getActivePunishment(interaction.guild.id, targetUser.id);
 
   if (!activePunishment || activePunishment.type !== punishmentKey) {
     await interaction.editReply({
@@ -418,7 +439,7 @@ async function undoPunishment(interaction, punishmentKey) {
     await addRoles(targetMember, activePunishment.savedRoleIds ?? []);
   }
 
-  await clearActivePunishment(targetUser.id);
+  await clearActivePunishment(interaction.guild.id, targetUser.id);
 
   await sendVisibleMessages(
     interaction,
@@ -446,13 +467,13 @@ async function handleDeepfry(interaction) {
     return;
   }
 
-  const activePunishment = await getActivePunishment(targetUser.id);
+  const activePunishment = await getActivePunishment(interaction.guild.id, targetUser.id);
 
   if (activePunishment?.roleId && targetMember) {
     await removeRoles(targetMember, [activePunishment.roleId]);
   }
 
-  await setActivePunishment(targetUser.id, {
+  await setActivePunishment(interaction.guild.id, targetUser.id, {
     type: 'deepfry',
     moderatorId: interaction.user.id,
     reason,
@@ -493,7 +514,7 @@ async function handleUndeepfry(interaction) {
     return;
   }
 
-  const activePunishment = await getActivePunishment(targetUser.id);
+  const activePunishment = await getActivePunishment(interaction.guild.id, targetUser.id);
 
   if (!activePunishment || activePunishment.type !== 'deepfry') {
     await interaction.editReply({
@@ -503,7 +524,7 @@ async function handleUndeepfry(interaction) {
   }
 
   await interaction.guild.bans.remove(targetUser.id).catch(() => null);
-  await clearActivePunishment(targetUser.id);
+  await clearActivePunishment(interaction.guild.id, targetUser.id);
 
   await sendVisibleMessages(interaction, UNDO_MESSAGES.undeepfry(targetUser), null);
 }
@@ -955,13 +976,25 @@ async function handleAutoReact(interaction) {
   const channel = interaction.options.getChannel('channel', true);
   const emoji = interaction.options.getString('emoji', true);
   const filter = interaction.options.getString('filter', true);
-  await setAutomationConfig(interaction.guild.id, 'autoReact', {
+  const botMember = await fetchMember(interaction.guild, client.user.id);
+  const permissions = channel.permissionsFor(botMember);
+  if (!permissions?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.AddReactions])) {
+    await interaction.editReply({ content: `I need View Channel, Read Message History, and Add Reactions in ${channel}.` });
+    return;
+  }
+  const existing = await getAutomationConfig(interaction.guild.id, 'autoReact');
+  const rules = Array.isArray(existing) ? existing : existing ? [existing] : [];
+  const nextRules = [
+    ...rules.filter((rule) => rule.channelId !== channel.id),
+    {
     channelId: channel.id,
     emoji,
     filter,
-  });
+    },
+  ];
+  await setAutomationConfig(interaction.guild.id, 'autoReact', nextRules);
   await interaction.editReply({
-    content: `Automatic reactions are enabled in ${channel}: ${emoji} on ${filter} messages.`,
+    content: `Automatic reactions are enabled in ${channel}: ${emoji} on ${filter} messages. ${nextRules.length} channel rule(s) are active.`,
   });
 }
 
@@ -1093,6 +1126,21 @@ async function handleRoleTag(interaction) {
 
   const subcommand = interaction.options.getSubcommand();
   const currentRules = (await getAutomationConfig(interaction.guild.id, 'roleTags')) ?? [];
+  if (subcommand === 'check') {
+    const user = interaction.options.getUser('user', true);
+    const member = await fetchMember(interaction.guild, user.id);
+    if (!member) {
+      await interaction.editReply({ content: 'That user is not currently in this server.' });
+      return;
+    }
+    const matches = currentRules.filter((rule) => memberMatchesTag(member, rule.tag));
+    await interaction.editReply({
+      content: matches.length
+        ? `${member} matches: ${matches.map((rule) => `\`${rule.tag}\` → ${rule.action === 'role' ? `<@&${rule.roleId}>` : rule.action}`).join(', ')}. No action was taken.`
+        : `${member} does not match any configured role-tag rule.`,
+    });
+    return;
+  }
   if (subcommand === 'list') {
     if (!currentRules.length) {
       await interaction.editReply({ content: 'No role-tag rules are configured.' });
@@ -1129,6 +1177,10 @@ async function handleRoleTag(interaction) {
     await interaction.editReply({ content: 'That role is managed by an integration and cannot be assigned.' });
     return;
   }
+  if (action === 'role' && !role.editable) {
+    await interaction.editReply({ content: `I cannot assign ${role}; move my highest role above it, then save the rule again.` });
+    return;
+  }
 
   const rule = { tag, action, roleId: action === 'role' ? role.id : null };
   const rules = [
@@ -1141,6 +1193,45 @@ async function handleRoleTag(interaction) {
   });
 }
 
+async function handlePunishmentConfig(interaction) {
+  await interaction.deferReply({ ephemeral: true });
+  if (!hasAdminPermission(interaction)) {
+    await interaction.editReply({ content: 'Only administrators can configure punishments.' });
+    return;
+  }
+
+  const subcommand = interaction.options.getSubcommand();
+  const configured = (await getAutomationConfig(interaction.guild.id, 'punishments')) ?? {};
+  if (subcommand === 'list') {
+    const entries = Object.entries(configured);
+    await interaction.editReply({
+      content: entries.length
+        ? entries.map(([type, value]) => `• **${PUNISHMENTS[type]?.label ?? type}** → <@&${value.roleId}>; announcements: <#${value.announceChannelId}>; restores ${value.baseRoleIds?.length ?? 0} role(s)`).join('\n')
+        : 'No punishments are configured. Use `/punishments setup`.',
+    });
+    return;
+  }
+
+  const type = interaction.options.getString('type', true);
+  const role = interaction.options.getRole('role', true);
+  const channel = interaction.options.getChannel('announce_channel', true);
+  const baseRoleIds = ['remove_role_1', 'remove_role_2', 'remove_role_3', 'remove_role_4']
+    .map((name) => interaction.options.getRole(name, false)?.id)
+    .filter(Boolean)
+    .filter((roleId) => roleId !== role.id);
+  if (role.managed) {
+    await interaction.editReply({ content: 'That punishment role is managed by an integration and cannot be assigned.' });
+    return;
+  }
+  if (!role.editable) {
+    await interaction.editReply({ content: `I cannot assign ${role}; move my highest role above it, then save the configuration again.` });
+    return;
+  }
+  configured[type] = { roleId: role.id, announceChannelId: channel.id, baseRoleIds };
+  await setAutomationConfig(interaction.guild.id, 'punishments', configured);
+  await interaction.editReply({ content: `${PUNISHMENTS[type].label} now applies ${role}, posts in ${channel}, and temporarily removes ${baseRoleIds.length} configured role(s).` });
+}
+
 function memberMatchesTag(member, tag) {
   const values = [member.user.username, member.user.globalName, member.nickname, member.displayName]
     .filter(Boolean)
@@ -1151,8 +1242,10 @@ function memberMatchesTag(member, tag) {
 async function enforceRoleTags(member) {
   if (member.user.bot) return;
   const rules = (await getAutomationConfig(member.guild.id, 'roleTags')) ?? [];
+  let matched = 0;
   for (const rule of rules) {
     if (!memberMatchesTag(member, rule.tag)) continue;
+    matched += 1;
     if (rule.action === 'role') {
       const role = member.guild.roles.cache.get(rule.roleId) ?? await member.guild.roles.fetch(rule.roleId).catch(() => null);
       if (role && !member.roles.cache.has(role.id)) {
@@ -1171,6 +1264,7 @@ async function enforceRoleTags(member) {
       return;
     }
   }
+  return matched;
 }
 
 async function reportMemberInvite(member) {
@@ -1223,6 +1317,13 @@ async function reportMemberInvite(member) {
     }
 
     const type = member.user.bot ? 'Bot added' : 'Member joined';
+    const inviteHistory = (await getAutomationConfig(member.guild.id, 'inviteHistory')) ?? {};
+    const cutoff = Date.now() - 90 * 24 * 60 * 60 * 1000;
+    for (const [userId, record] of Object.entries(inviteHistory)) {
+      if (!record?.joinedAt || new Date(record.joinedAt).getTime() < cutoff) delete inviteHistory[userId];
+    }
+    inviteHistory[member.id] = { source, joinedAt: new Date().toISOString() };
+    await setAutomationConfig(member.guild.id, 'inviteHistory', inviteHistory);
     await sendChannelMessage(member.guild, config.channelId, `📨 **${type}**: ${member} joined via ${source}.`);
   });
 }
@@ -1231,7 +1332,15 @@ async function reportMemberLeave(member) {
   const config = await getAutomationConfig(member.guild.id, 'inviteTracker');
   if (!config) return;
   const type = member.user.bot ? 'Bot removed' : 'Member left';
-  await sendChannelMessage(member.guild, config.channelId, `📤 **${type}**: <@${member.id}> (${member.user.tag} / ${member.id}) left the server.`);
+  const inviteHistory = (await getAutomationConfig(member.guild.id, 'inviteHistory')) ?? {};
+  const attribution = inviteHistory[member.id]?.source;
+  delete inviteHistory[member.id];
+  await setAutomationConfig(member.guild.id, 'inviteHistory', inviteHistory);
+  await sendChannelMessage(
+    member.guild,
+    config.channelId,
+    `📤 **${type}**: <@${member.id}> (${member.user.tag} / ${member.id}) left the server.${attribution ? ` They joined via ${attribution}.` : ' Their original join source was not recorded.'}`
+  );
 }
 
 async function handleInviteTestButton(interaction) {
@@ -1303,8 +1412,12 @@ async function handleAutomations(message) {
   if (!message.guild || message.author.bot) return;
 
   const autoReact = await getAutomationConfig(message.guild.id, 'autoReact');
-  if (autoReact?.channelId === message.channelId && attachmentMatchesFilter(message, autoReact.filter)) {
-    await message.react(autoReact.emoji).catch(() => null);
+  const autoReactRules = Array.isArray(autoReact) ? autoReact : autoReact ? [autoReact] : [];
+  for (const rule of autoReactRules) {
+    if (rule.channelId !== message.channelId || !attachmentMatchesFilter(message, rule.filter)) continue;
+    await message.react(rule.emoji).catch((error) =>
+      console.error(`Auto-reaction failed in ${message.guild.id}/${message.channelId}; check Add Reactions and the emoji:`, error.message)
+    );
   }
 
   const honeypot = await getAutomationConfig(message.guild.id, 'honeypot');
@@ -1708,7 +1821,7 @@ async function handleHelp(interaction) {
 }
 
 async function handleJoinGuard(member) {
-  const activePunishment = await getActivePunishment(member.id);
+  const activePunishment = await getActivePunishment(member.guild.id, member.id);
 
   if (!activePunishment) {
     return;
@@ -1731,7 +1844,7 @@ async function handleJoinGuard(member) {
   const tick = async () => {
     attempts -= 1;
 
-    const latestPunishment = await getActivePunishment(member.id);
+    const latestPunishment = await getActivePunishment(member.guild.id, member.id);
     if (!latestPunishment) {
       return;
     }
@@ -1978,6 +2091,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     if (commandName === 'roletag') {
       await handleRoleTag(interaction);
+      return;
+    }
+
+    if (commandName === 'punishments') {
+      await handlePunishmentConfig(interaction);
       return;
     }
 

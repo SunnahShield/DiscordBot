@@ -304,6 +304,35 @@ const roleTagCommand = new SlashCommandBuilder()
   .addSubcommand((subcommand) =>
     subcommand.setName('list').setDescription('List the configured tag rules')
   )
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName('check')
+      .setDescription('Check which rules match a member without taking action')
+      .addUserOption((option) => option.setName('user').setDescription('Member to check').setRequired(true))
+  )
+  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
+
+const punishmentConfigCommand = new SlashCommandBuilder()
+  .setName('punishments')
+  .setDescription('Configure punishment roles and announcement channels for this server')
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName('setup')
+      .setDescription('Configure one role-based punishment')
+      .addStringOption((option) => option.setName('type').setDescription('Punishment to configure').setRequired(true).addChoices(
+        { name: 'Grill', value: 'grill' },
+        { name: 'Super Grill', value: 'sgrill' },
+        { name: 'Jail', value: 'jail' },
+        { name: 'Naughty', value: 'naughty' }
+      ))
+      .addRoleOption((option) => option.setName('role').setDescription('Role applied by this punishment').setRequired(true))
+      .addChannelOption((option) => option.setName('announce_channel').setDescription('Where to post the punishment').setRequired(true).addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement))
+      .addRoleOption((option) => option.setName('remove_role_1').setDescription('Optional role to remove while punished'))
+      .addRoleOption((option) => option.setName('remove_role_2').setDescription('Optional role to remove while punished'))
+      .addRoleOption((option) => option.setName('remove_role_3').setDescription('Optional role to remove while punished'))
+      .addRoleOption((option) => option.setName('remove_role_4').setDescription('Optional role to remove while punished'))
+  )
+  .addSubcommand((subcommand) => subcommand.setName('list').setDescription('Show this server\'s punishment configuration'))
   .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
 
 const commands = [
@@ -354,6 +383,7 @@ const commands = [
   honeypotCommand,
   inviteTrackerCommand,
   roleTagCommand,
+  punishmentConfigCommand,
   new SlashCommandBuilder()
     .setName('welcome-test')
     .setDescription('Send the configured welcome embed using your profile as the preview')
