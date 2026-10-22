@@ -10,6 +10,7 @@ const {
   Events,
   GatewayIntentBits,
   OverwriteType,
+  Partials,
   PermissionFlagsBits,
 } = require('discord.js');
 const { deployCommands } = require('./deploy-commands');
@@ -34,6 +35,13 @@ const {
   getAutomationConfig,
   setAutomationConfig,
 } = require('./automation-store');
+const {
+  attachMasterLogger,
+  invalidateMasterLogConfig,
+  logMaster,
+} = require('./master-logger');
+const { attachGenderLogger, logGenderModeration } = require('./gender-logger');
+const { createInviteTracker } = require('./invite-tracker');
 
 const { DISCORD_TOKEN } = process.env;
 
@@ -45,10 +53,27 @@ const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildModeration,
     GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.GuildMessageReactions,
     GatewayIntentBits.GuildInvites,
+    GatewayIntentBits.GuildVoiceStates,
+    GatewayIntentBits.GuildEmojisAndStickers,
+    GatewayIntentBits.GuildIntegrations,
+    GatewayIntentBits.GuildWebhooks,
+    GatewayIntentBits.GuildScheduledEvents,
+    GatewayIntentBits.AutoModerationConfiguration,
+    GatewayIntentBits.AutoModerationExecution,
     GatewayIntentBits.MessageContent,
-  ],
+  ].filter(Boolean),
+  partials: [
+    Partials.Channel,
+    Partials.GuildMember,
+    Partials.Message,
+    Partials.Reaction,
+    Partials.User,
+    Partials.ThreadMember,
+  ].filter(Boolean),
 });
 
 const POINT_SYMBOL = 'SSP';
@@ -58,8 +83,7 @@ const MAX_TIMEOUT_MS = 28 * 24 * 60 * 60 * 1000;
 const STAFF_COMMAND_MIN_LEVEL = 30;
 const BULK_DELETE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 const ANNOUNCEMENT_EMBED_COLOR = 0xdd6b14;
-const inviteCache = new Map();
-const inviteOperations = new Map();
+let inviteTracker;
 
 const ROLE_IDS = {
   member: '1149168371984777287',
@@ -89,34 +113,21 @@ const CHANNEL_IDS = {
   femaleLog: '1504223092954890441',
 };
 
-const BASE_ROLE_IDS = [
-  ROLE_IDS.member,
-  ROLE_IDS.male,
-  ROLE_IDS.female,
-  ROLE_IDS.femaleNonMuslim,
-];
-
 const PUNISHMENTS = {
   grill: {
     label: 'Grill',
-    roleId: ROLE_IDS.grill,
-    announceChannelId: CHANNEL_IDS.grillAnnounce,
   },
   sgrill: {
     label: 'Super Grill',
-    roleId: ROLE_IDS.superGrill,
-    announceChannelId: CHANNEL_IDS.superGrillAnnounce,
   },
   jail: {
     label: 'Jail',
-    roleId: ROLE_IDS.jail,
-    announceChannelId: CHANNEL_IDS.jailAnnounce,
   },
   naughty: {
     label: 'Naughty',
-    roleId: ROLE_IDS.naughty,
-    announceChannelId: CHANNEL_IDS.naughtyAnnounce,
   },
+  deepfry: { label: 'Deepfry' },
+  marinate: { label: 'Timeout' },
 };
 
 const PUNISH_MESSAGES = {
@@ -197,22 +208,6 @@ async function getGuildPunishment(guildId, punishmentKey) {
   return { ...PUNISHMENTS[punishmentKey], ...punishment };
 }
 
-function getPunishmentAnnounceChannelId(commandName) {
-  if (commandName === 'deepfry') {
-    return CHANNEL_IDS.grillAnnounce;
-  }
-
-  return PUNISHMENTS[commandName]?.announceChannelId ?? null;
-}
-
-function getModerationLogChannelId(member) {
-  if (member.roles.cache.has(ROLE_IDS.female) || member.roles.cache.has(ROLE_IDS.femaleNonMuslim)) {
-    return CHANNEL_IDS.femaleLog;
-  }
-
-  return CHANNEL_IDS.maleLog;
-}
-
 function unique(values) {
   return [...new Set(values.filter(Boolean))];
 }
@@ -244,7 +239,7 @@ async function fetchMember(guild, userId) {
   }
 }
 
-async function removeBaseRoles(member, baseRoleIds = BASE_ROLE_IDS) {
+async function removeBaseRoles(member, baseRoleIds = []) {
   const removedRoleIds = baseRoleIds.filter((roleId) => member.roles.cache.has(roleId));
 
   if (removedRoleIds.length) {
@@ -282,11 +277,73 @@ async function sendChannelMessage(guild, channelId, content) {
   }
 }
 
+async function sendChannelPayload(guild, channelId, payload) {
+  if (!channelId) throw new Error('No log destination was configured.');
+  const channel = await guild.channels.fetch(channelId).catch(() => null);
+  if (!channel?.isTextBased?.() || typeof channel.send !== 'function') {
+    throw new Error(`Configured log channel ${channelId} is unavailable or is not text-based.`);
+  }
+  return channel.send(payload);
+}
+
+// The invite tracker owns its own persistent usage baseline and member
+// attribution history. Keeping it separate from the generic automation store
+// prevents high-frequency join events from overwriting other configuration.
+inviteTracker = createInviteTracker({
+  getConfig: (guildId) => getAutomationConfig(guildId, 'inviteTracker'),
+  setConfig: (guildId, config) => setAutomationConfig(guildId, 'inviteTracker', config),
+  clearConfig: (guildId) => clearAutomationConfig(guildId, 'inviteTracker'),
+  send: sendChannelPayload,
+});
+
+// These listeners are attached once at startup. They do not replace the bot's
+// moderation handlers; they observe the same Discord events independently.
+attachMasterLogger(client);
+attachGenderLogger(client);
+
 async function sendVisibleMessages(interaction, content, extraChannelId) {
   await interaction.editReply({ content });
 
   if (extraChannelId && extraChannelId !== interaction.channelId) {
     await sendChannelMessage(interaction.guild, extraChannelId, content);
+  }
+}
+
+async function recordMasterAction(interaction, {
+  title,
+  target = null,
+  description,
+  color,
+  fields = [],
+} = {}) {
+  try {
+    await logMaster(interaction.guild, {
+      title,
+      description: description ?? `${interaction.user.tag} used a moderation command.`,
+      color,
+      actor: interaction.user.id,
+      target: target?.id ?? target,
+      channel: interaction.channelId,
+      fields: [
+        { name: 'Moderator', value: `${interaction.user.tag} (${interaction.user.id})`, inline: true },
+        ...(target ? [{ name: 'Target', value: `${target.tag ?? target.username ?? target.id ?? target} (${target.id ?? target})`, inline: true }] : []),
+        ...fields,
+      ],
+    });
+  } catch (error) {
+    console.error('Could not write explicit master action log', error);
+  }
+
+  try {
+    await logGenderModeration(interaction, {
+      title,
+      target,
+      description,
+      color,
+      fields,
+    });
+  } catch (error) {
+    console.error('Could not write explicit gender moderation log', error);
   }
 }
 
@@ -394,6 +451,16 @@ async function applyPunishment(interaction, punishmentKey) {
     updatedAt: new Date().toISOString(),
   });
 
+  await recordMasterAction(interaction, {
+    title: `${punishment.label} Punishment Applied`,
+    target: targetUser,
+    description: `${interaction.user.tag} applied ${punishment.label} to ${targetUser.tag ?? targetUser.username}.`,
+    fields: [
+      { name: 'Punishment role', value: `<@&${punishment.roleId}>`, inline: true },
+      { name: 'Reason', value: reason },
+    ],
+  });
+
   await sendVisibleMessages(
     interaction,
     PUNISH_MESSAGES[punishmentKey](targetUser),
@@ -441,10 +508,17 @@ async function undoPunishment(interaction, punishmentKey) {
 
   await clearActivePunishment(interaction.guild.id, targetUser.id);
 
+  await recordMasterAction(interaction, {
+    title: `${punishment.label} Punishment Removed`,
+    target: targetUser,
+    description: `${interaction.user.tag} removed ${punishment.label} from ${targetUser.tag ?? targetUser.username}.`,
+    fields: [{ name: 'Restored roles', value: activePunishment.savedRoleIds?.length ? activePunishment.savedRoleIds.map((id) => `<@&${id}>`).join(', ') : 'None' }],
+  });
+
   await sendVisibleMessages(
     interaction,
     UNDO_MESSAGES[`un${punishmentKey}`](targetUser),
-    getPunishmentAnnounceChannelId(punishmentKey)
+    punishment.announceChannelId
   );
 }
 
@@ -489,10 +563,21 @@ async function handleDeepfry(interaction) {
     await interaction.guild.bans.create(targetUser.id, { reason });
   }
 
+  await recordMasterAction(interaction, {
+    title: 'Deepfry Punishment Applied',
+    target: targetUser,
+    description: `${interaction.user.tag} deep-fried ${targetUser.tag ?? targetUser.username}.`,
+    fields: [
+      { name: 'Reason', value: reason },
+      { name: 'Ban status', value: alreadyBanned ? 'Already banned' : 'Banned now', inline: true },
+    ],
+  });
+
+  const punishmentConfig = (await getAutomationConfig(interaction.guild.id, 'punishments'))?.deepfry;
   await sendVisibleMessages(
     interaction,
     PUNISH_MESSAGES.deepfry(targetUser),
-    getPunishmentAnnounceChannelId('deepfry')
+    punishmentConfig?.announceChannelId
   );
 }
 
@@ -525,6 +610,12 @@ async function handleUndeepfry(interaction) {
 
   await interaction.guild.bans.remove(targetUser.id).catch(() => null);
   await clearActivePunishment(interaction.guild.id, targetUser.id);
+
+  await recordMasterAction(interaction, {
+    title: 'Deepfry Punishment Removed',
+    target: targetUser,
+    description: `${interaction.user.tag} removed the deepfry ban from ${targetUser.tag ?? targetUser.username}.`,
+  });
 
   await sendVisibleMessages(interaction, UNDO_MESSAGES.undeepfry(targetUser), null);
 }
@@ -568,12 +659,23 @@ async function handleMarinate(interaction) {
 
   await targetMember.timeout(durationMs, reason);
 
+  await recordMasterAction(interaction, {
+    title: 'Member Timed Out',
+    target: targetUser,
+    description: `${interaction.user.tag} timed out ${targetUser.tag ?? targetUser.username}.`,
+    fields: [
+      { name: 'Duration', value: durationText, inline: true },
+      { name: 'Reason', value: reason },
+    ],
+  });
+
   const logMessage = `**Timeout Log**\n${interaction.user} timed out ${targetUser} for ${durationText}.\nReason: ${reason}`;
 
+  const punishmentConfig = (await getAutomationConfig(interaction.guild.id, 'punishments'))?.marinate;
   await sendVisibleMessages(
     interaction,
     logMessage,
-    getModerationLogChannelId(targetMember)
+    punishmentConfig?.announceChannelId
   );
 }
 
@@ -677,6 +779,15 @@ async function handleArchive(interaction) {
   await channel.setParent(archiveCategory, { lockPermissions: false, reason: auditReason });
   // Do this last because it may also remove the bot's own role-based channel access.
   await removeChannelAccess(channel, botMember, auditReason);
+
+  await recordMasterAction(interaction, {
+    title: 'Channel Archived',
+    description: `${interaction.user.tag} archived ${channel.name} into ${archiveCategory.name}.`,
+    fields: [
+      { name: 'Archive category', value: `<#${archiveCategory.id}>`, inline: true },
+      { name: 'Archive number', value: String(archiveNumber), inline: true },
+    ],
+  });
 
   await interaction.editReply({
     content: `Archived this channel in **${archiveCategory.name}** and removed its visibility.`,
@@ -797,6 +908,15 @@ async function handleAnnouncement(interaction) {
   }
 
   await targetChannel.send(payload);
+  await recordMasterAction(interaction, {
+    title: 'Official Announcement Published',
+    description: `${interaction.user.tag} published an official announcement.`,
+    fields: [
+      { name: 'Destination', value: `<#${targetChannel.id}>`, inline: true },
+      { name: 'Format', value: format, inline: true },
+      { name: 'Title', value: title ?? 'None' },
+    ],
+  });
   await interaction.editReply({ content: `Official announcement published in ${targetChannel}.` });
 }
 
@@ -1033,40 +1153,87 @@ async function handleHoneypot(interaction) {
   });
 }
 
-function queueInviteOperation(guildId, operation) {
-  const previous = inviteOperations.get(guildId) ?? Promise.resolve();
-  const next = previous.then(operation, operation);
-  inviteOperations.set(guildId, next);
-  next.finally(() => {
-    if (inviteOperations.get(guildId) === next) inviteOperations.delete(guildId);
-  }).catch(() => null);
-  return next;
-}
-
-async function fetchInviteSnapshot(guild) {
-  const [invites, vanity] = await Promise.all([
-    guild.invites.fetch().catch(() => null),
-    guild.fetchVanityData().catch(() => null),
-  ]);
-  if (!invites) return null;
-
+async function getLogChannelPermissions(guild, channel) {
+  const botMember = guild.members.me ?? await fetchMember(guild, client.user.id);
+  const permissions = botMember && channel ? channel.permissionsFor(botMember) : null;
   return {
-    invites: new Map([...invites.values()].map((invite) => [invite.code, {
-      uses: invite.uses ?? 0,
-      maxUses: invite.maxUses ?? 0,
-      inviter: invite.inviter ?? null,
-    }])),
-    vanityUses: vanity?.uses ?? null,
-    vanityCode: vanity?.code ?? null,
+    canSend: Boolean(permissions?.has([
+      PermissionFlagsBits.ViewChannel,
+      PermissionFlagsBits.SendMessages,
+      PermissionFlagsBits.EmbedLinks,
+    ])),
+    canAudit: Boolean(botMember?.permissions?.has(PermissionFlagsBits.ViewAuditLog)),
+    canManageGuild: Boolean(botMember?.permissions?.has(PermissionFlagsBits.ManageGuild)),
   };
 }
 
-async function refreshInviteCache(guild) {
-  return queueInviteOperation(guild.id, async () => {
-    const snapshot = await fetchInviteSnapshot(guild);
-    if (!snapshot) return false;
-    inviteCache.set(guild.id, snapshot);
-    return true;
+async function handleMasterLogs(interaction) {
+  await interaction.deferReply({ ephemeral: true });
+  if (!hasAdminPermission(interaction)) {
+    await interaction.editReply({ content: 'Only administrators can configure master logs.' });
+    return;
+  }
+
+  const subcommand = interaction.options.getSubcommand();
+  if (subcommand === 'disable') {
+    await clearAutomationConfig(interaction.guild.id, 'masterLogs');
+    invalidateMasterLogConfig(interaction.guild.id);
+    await interaction.editReply({ content: 'Master logging is disabled.' });
+    return;
+  }
+
+  const current = await getAutomationConfig(interaction.guild.id, 'masterLogs');
+  if (subcommand === 'status') {
+    const channel = current?.channelId
+      ? await interaction.guild.channels.fetch(current.channelId).catch(() => null)
+      : null;
+    const permissions = await getLogChannelPermissions(interaction.guild, channel);
+    await interaction.editReply({
+      content: current?.channelId
+        ? [
+          `Master log destination: <#${current.channelId}>`,
+          `Send embeds: ${permissions.canSend ? '✅' : '❌'}`,
+          `View Audit Log (actor/reason attribution): ${permissions.canAudit ? '✅' : '❌'}`,
+          `Manage Server (invite usage attribution): ${permissions.canManageGuild ? '✅' : '❌'}`,
+        ].join('\n')
+        : 'Master logging is not configured. Use `/logs setup`.',
+    });
+    return;
+  }
+
+  if (subcommand === 'test') {
+    if (!current?.channelId) {
+      await interaction.editReply({ content: 'Set up master logs first with `/logs setup`.' });
+      return;
+    }
+    const sent = await logMaster(interaction.guild, {
+      title: 'Master Logs Test',
+      description: 'The master logger is configured and can send embeds.',
+      actor: interaction.user.id,
+      channel: interaction.channelId,
+      fields: [
+        { name: 'Configured by', value: `${interaction.user.tag} (${interaction.user.id})`, inline: true },
+        { name: 'Result', value: 'If this embed is visible, the destination is working.' },
+      ],
+    });
+    await interaction.editReply({ content: sent ? `Test embed sent to <#${current.channelId}>.` : 'I could not send the test embed. Check the destination and bot permissions.' });
+    return;
+  }
+
+  const channel = interaction.options.getChannel('channel', true);
+  if (!channel.isTextBased?.()) {
+    await interaction.editReply({ content: 'Choose a text or announcement channel for master logs.' });
+    return;
+  }
+  const permissions = await getLogChannelPermissions(interaction.guild, channel);
+  if (!permissions.canSend) {
+    await interaction.editReply({ content: `I need View Channel, Send Messages, and Embed Links in ${channel}.` });
+    return;
+  }
+  await setAutomationConfig(interaction.guild.id, 'masterLogs', { channelId: channel.id, configuredAt: new Date().toISOString() });
+  invalidateMasterLogConfig(interaction.guild.id);
+  await interaction.editReply({
+    content: `Master logging is enabled in ${channel}. ${permissions.canAudit ? 'I can attribute audit-log actions to an actor.' : 'Give me View Audit Log to include the acting moderator and audit reasons whenever Discord provides them.'}`,
   });
 }
 
@@ -1079,14 +1246,31 @@ async function handleInviteTracker(interaction) {
 
   const subcommand = interaction.options.getSubcommand();
   if (subcommand === 'disable') {
-    await clearAutomationConfig(interaction.guild.id, 'inviteTracker');
+    await inviteTracker.disable(interaction.guild);
     await interaction.editReply({ content: 'Invite tracking reports are now disabled.' });
     return;
   }
 
+  if (subcommand === 'status') {
+    const status = await inviteTracker.status(interaction.guild);
+    await interaction.editReply({
+      content: status.enabled
+        ? [
+          `Invite tracker destination: <#${status.channel?.id ?? 'unknown'}>`,
+          `Baseline ready: ${status.baselineReady ? '✅' : '❌'}`,
+          `Known active invites: ${status.inviteCount}`,
+          `Send embeds: ${status.permissions.canSend ? '✅' : '❌'}`,
+          `Manage Server (read invite uses): ${status.permissions.canReadInvites ? '✅' : '❌'}`,
+          `View Audit Log (kick/ban actor attribution): ${status.permissions.canReadAuditLog ? '✅' : '❌'}`,
+        ].join('\n')
+        : 'Invite tracking is not configured. Use `/invites setup`.',
+    });
+    return;
+  }
+
   if (subcommand === 'test') {
-    const config = await getAutomationConfig(interaction.guild.id, 'inviteTracker');
-    if (!config) {
+    const status = await inviteTracker.status(interaction.guild);
+    if (!status.enabled) {
       await interaction.editReply({ content: 'Set up invite tracking first with `/invites setup`.' });
       return;
     }
@@ -1108,12 +1292,16 @@ async function handleInviteTracker(interaction) {
   }
 
   const channel = interaction.options.getChannel('channel', true);
-  const cached = await refreshInviteCache(interaction.guild);
-  await setAutomationConfig(interaction.guild.id, 'inviteTracker', { channelId: channel.id });
+  const logPermissions = await getLogChannelPermissions(interaction.guild, channel);
+  if (!logPermissions.canSend) {
+    await interaction.editReply({ content: `I need View Channel, Send Messages, and Embed Links in ${channel}.` });
+    return;
+  }
+  const result = await inviteTracker.setup(interaction.guild, channel);
   await interaction.editReply({
-    content: cached
-      ? `Invite tracking is enabled. New-member join attribution will be reported in ${channel}.`
-      : `Invite tracking is enabled for ${channel}, but I could not read this server's invites. Give me the Manage Server permission, then run this setup command again.`,
+    content: result.baseline.ok
+      ? `Invite tracking is enabled in ${channel}. I recorded ${result.baseline.inviteCount} existing invite${result.baseline.inviteCount === 1 ? '' : 's'} as the baseline.${result.canReadInvites ? '' : ' Give me Manage Server to read invite usage and attribute joins.'}${result.canReadAuditLog ? '' : ' Give me View Audit Log to identify the moderator for kicks and bans.'}`
+      : `Invite tracking is enabled in ${channel}, but I could not read this server's invites. Give me Manage Server, then run /invites setup again.`,
   });
 }
 
@@ -1206,30 +1394,49 @@ async function handlePunishmentConfig(interaction) {
     const entries = Object.entries(configured);
     await interaction.editReply({
       content: entries.length
-        ? entries.map(([type, value]) => `• **${PUNISHMENTS[type]?.label ?? type}** → <@&${value.roleId}>; announcements: <#${value.announceChannelId}>; restores ${value.baseRoleIds?.length ?? 0} role(s)`).join('\n')
+        ? entries.map(([type, value]) => {
+          const roleText = value.roleId ? `<@&${value.roleId}>` : 'no role';
+          const announcementText = value.announceChannelId ? `<#${value.announceChannelId}>` : 'command channel only';
+          return `• **${PUNISHMENTS[type]?.label ?? type}** → ${roleText}; announcements: ${announcementText}; restores ${value.baseRoleIds?.length ?? 0} role(s)`;
+        }).join('\n')
         : 'No punishments are configured. Use `/punishments setup`.',
     });
     return;
   }
 
   const type = interaction.options.getString('type', true);
-  const role = interaction.options.getRole('role', true);
-  const channel = interaction.options.getChannel('announce_channel', true);
+  const roleBasedPunishment = ['grill', 'sgrill', 'jail', 'naughty'].includes(type);
+  const role = interaction.options.getRole('role', false);
+  const channel = interaction.options.getChannel('announce_channel', false);
+  if (roleBasedPunishment && !role) {
+    await interaction.editReply({ content: `Choose the role that ${PUNISHMENTS[type].label} applies.` });
+    return;
+  }
   const baseRoleIds = ['remove_role_1', 'remove_role_2', 'remove_role_3', 'remove_role_4']
     .map((name) => interaction.options.getRole(name, false)?.id)
     .filter(Boolean)
-    .filter((roleId) => roleId !== role.id);
-  if (role.managed) {
+    .filter((roleId) => roleId !== role?.id);
+  if (role?.managed) {
     await interaction.editReply({ content: 'That punishment role is managed by an integration and cannot be assigned.' });
     return;
   }
-  if (!role.editable) {
+  if (role && !role.editable) {
     await interaction.editReply({ content: `I cannot assign ${role}; move my highest role above it, then save the configuration again.` });
     return;
   }
-  configured[type] = { roleId: role.id, announceChannelId: channel.id, baseRoleIds };
+  const previous = configured[type] ?? {};
+  configured[type] = {
+    ...previous,
+    ...(role ? { roleId: role.id, baseRoleIds } : {}),
+    ...(channel ? { announceChannelId: channel.id } : {}),
+  };
   await setAutomationConfig(interaction.guild.id, 'punishments', configured);
-  await interaction.editReply({ content: `${PUNISHMENTS[type].label} now applies ${role}, posts in ${channel}, and temporarily removes ${baseRoleIds.length} configured role(s).` });
+  const roleSummary = roleBasedPunishment
+    ? `applies ${role}`
+    : 'does not need a punishment role';
+  const channelSummary = channel ? ` and posts in ${channel}` : '';
+  const restoreSummary = roleBasedPunishment ? ` It temporarily removes ${baseRoleIds.length} configured role(s).` : '';
+  await interaction.editReply({ content: `${PUNISHMENTS[type].label} ${roleSummary}${channelSummary}.${restoreSummary}` });
 }
 
 function memberMatchesTag(member, tag) {
@@ -1268,79 +1475,11 @@ async function enforceRoleTags(member) {
 }
 
 async function reportMemberInvite(member) {
-  const config = await getAutomationConfig(member.guild.id, 'inviteTracker');
-  if (!config) return;
-
-  await queueInviteOperation(member.guild.id, async () => {
-    const previous = inviteCache.get(member.guild.id);
-    const current = await fetchInviteSnapshot(member.guild);
-    let source = 'a Discord join source that does not expose an invite code (for example Discovery, Server Tag, or Join Server), or an unavailable/deleted invite';
-
-    if (!current) {
-      source = 'an invite source that could not be checked because I cannot read this server\'s invites';
-    } else if (!previous) {
-      // A baseline is required to compare invite uses; do not pretend this first join is unknown.
-      source = 'an invite source that could not be attributed because invite tracking had no earlier usage baseline';
-      inviteCache.set(member.guild.id, current);
-    } else {
-      const usedInvite = [...current.invites.entries()]
-        .map(([code, invite]) => ({ code, invite, previous: previous.invites.get(code) }))
-        .filter(({ invite, previous: oldInvite }) => invite.uses > (oldInvite?.uses ?? 0))
-        .sort((a, b) => (b.invite.uses - (b.previous?.uses ?? 0)) - (a.invite.uses - (a.previous?.uses ?? 0)))[0];
-
-      if (usedInvite) {
-        const { code, invite, previous: oldInvite } = usedInvite;
-        source = invite.inviter
-          ? `${invite.inviter} using invite \`${code}\` (${invite.uses} total uses)`
-          : `invite \`${code}\` (${invite.uses} total uses)`;
-        // Consume exactly one use. This lets consecutive joins using the same personal
-        // invite be attributed individually even when Discord has already counted both.
-        previous.invites.set(code, { ...invite, uses: (oldInvite?.uses ?? 0) + 1 });
-        inviteCache.set(member.guild.id, previous);
-      } else if (current.vanityUses != null && previous.vanityUses != null && current.vanityUses > previous.vanityUses) {
-        source = `the server vanity invite \`${current.vanityCode ?? 'vanity'}\``;
-        previous.vanityUses += 1;
-        inviteCache.set(member.guild.id, previous);
-      } else {
-        const expiredOneUseInvite = [...previous.invites.entries()].find(([code, invite]) =>
-          !current.invites.has(code) && invite.maxUses > 0 && invite.uses + 1 >= invite.maxUses
-        );
-        if (expiredOneUseInvite) {
-          const [code, invite] = expiredOneUseInvite;
-          source = invite.inviter
-            ? `possibly ${invite.inviter} using one-use invite \`${code}\` (the code disappeared after the join)`
-            : `possibly one-use invite \`${code}\` (the code disappeared after the join)`;
-        }
-        // No invite counter moved, so retain no stale counts for a later join.
-        inviteCache.set(member.guild.id, current);
-      }
-    }
-
-    const type = member.user.bot ? 'Bot added' : 'Member joined';
-    const inviteHistory = (await getAutomationConfig(member.guild.id, 'inviteHistory')) ?? {};
-    const cutoff = Date.now() - 90 * 24 * 60 * 60 * 1000;
-    for (const [userId, record] of Object.entries(inviteHistory)) {
-      if (!record?.joinedAt || new Date(record.joinedAt).getTime() < cutoff) delete inviteHistory[userId];
-    }
-    inviteHistory[member.id] = { source, joinedAt: new Date().toISOString() };
-    await setAutomationConfig(member.guild.id, 'inviteHistory', inviteHistory);
-    await sendChannelMessage(member.guild, config.channelId, `📨 **${type}**: ${member} joined via ${source}.`);
-  });
+  return inviteTracker.reportMemberJoin(member);
 }
 
 async function reportMemberLeave(member) {
-  const config = await getAutomationConfig(member.guild.id, 'inviteTracker');
-  if (!config) return;
-  const type = member.user.bot ? 'Bot removed' : 'Member left';
-  const inviteHistory = (await getAutomationConfig(member.guild.id, 'inviteHistory')) ?? {};
-  const attribution = inviteHistory[member.id]?.source;
-  delete inviteHistory[member.id];
-  await setAutomationConfig(member.guild.id, 'inviteHistory', inviteHistory);
-  await sendChannelMessage(
-    member.guild,
-    config.channelId,
-    `📤 **${type}**: <@${member.id}> (${member.user.tag} / ${member.id}) left the server.${attribution ? ` They joined via ${attribution}.` : ' Their original join source was not recorded.'}`
-  );
+  return inviteTracker.reportMemberRemove(member);
 }
 
 async function handleInviteTestButton(interaction) {
@@ -1348,22 +1487,14 @@ async function handleInviteTestButton(interaction) {
     await interaction.reply({ content: 'Only administrators can use invite tracker tests.', ephemeral: true });
     return;
   }
-  const config = await getAutomationConfig(interaction.guild.id, 'inviteTracker');
-  if (!config) {
+  const status = await inviteTracker.status(interaction.guild);
+  if (!status.enabled) {
     await interaction.reply({ content: 'Invite tracking is not configured.', ephemeral: true });
     return;
   }
   const scenario = interaction.customId.split(':')[1];
-  const samples = {
-    inviter: `📨 **Member joined**: ${interaction.user} joined via ${interaction.user} using invite \`example\` (12 total uses).`,
-    vanity: `📨 **Member joined**: ${interaction.user} joined via the server vanity invite \`vanity-url\`.`,
-    unknown: `📨 **Member joined**: ${interaction.user} joined via an unknown invite or a join that could not be attributed.`,
-    'bot-join': `📨 **Bot added**: Example Bot joined via ${interaction.user} using invite \`example\` (12 total uses).`,
-    leave: `📤 **Member left**: ${interaction.user} (${interaction.user.tag} / ${interaction.user.id}) left the server.`,
-    'bot-leave': '📤 **Bot removed**: Example Bot (000000000000000000) left the server.',
-  };
-  await sendChannelMessage(interaction.guild, config.channelId, samples[scenario]);
-  await interaction.reply({ content: `Sent the ${scenario.replace('-', ' ')} test to <#${config.channelId}>.`, ephemeral: true });
+  const sent = await inviteTracker.sendTest(interaction.guild, scenario, interaction.user);
+  await interaction.reply({ content: sent ? `Sent the ${scenario.replace('-', ' ')} test to <#${status.channel?.id ?? 'the invite log'}>.` : 'I could not send that test. Check the invite-log channel and my permissions.', ephemeral: true });
 }
 
 function attachmentMatchesFilter(message, filter) {
@@ -1438,6 +1569,17 @@ async function handleAutomations(message) {
 
     await member.timeout(honeypot.durationMs, 'Honeypot triggered');
     const deletedCount = await deleteUserMessagesFromLastDay(message.guild, message.author.id, botMember);
+    await logMaster(message.guild, {
+      title: 'Honeypot Triggered',
+      description: `${message.author.tag} triggered the configured honeypot.`,
+      actor: message.author.id,
+      target: message.author.id,
+      channel: message.channelId,
+      fields: [
+        { name: 'Timeout', value: honeypot.durationLabel, inline: true },
+        { name: 'Messages deleted', value: String(deletedCount), inline: true },
+      ],
+    }).catch((error) => console.error('Could not log honeypot action', error));
     await sendChannelMessage(
       message.guild,
       honeypot.logChannelId,
@@ -1482,12 +1624,19 @@ async function handleUnmarinate(interaction) {
 
   await targetMember.timeout(null, `Timeout removed by ${interaction.user.tag}`);
 
+  await recordMasterAction(interaction, {
+    title: 'Member Timeout Removed',
+    target: targetUser,
+    description: `${interaction.user.tag} removed ${targetUser.tag ?? targetUser.username}'s timeout.`,
+  });
+
   const logMessage = `**Timeout Log**\n${interaction.user} removed ${targetUser}'s timeout.`;
 
+  const punishmentConfig = (await getAutomationConfig(interaction.guild.id, 'punishments'))?.marinate;
   await sendVisibleMessages(
     interaction,
     logMessage,
-    getModerationLogChannelId(targetMember)
+    punishmentConfig?.announceChannelId
   );
 }
 
@@ -1643,6 +1792,16 @@ async function handlePurge(interaction) {
     botMember
   );
 
+  await recordMasterAction(interaction, {
+    title: 'Messages Purged',
+    target: targetUser,
+    description: `${interaction.user.tag} purged ${deletedCount} message(s) from ${interaction.channel?.name ?? 'a channel'}.`,
+    fields: [
+      { name: 'Deleted messages', value: String(deletedCount), inline: true },
+      { name: 'Requested count', value: String(count), inline: true },
+    ],
+  });
+
   await interaction.editReply({
     content: `Deleted ${deletedCount} message(s)${
       targetUser ? ` from ${targetUser}` : ''
@@ -1689,6 +1848,16 @@ async function handleAllPurge(interaction) {
       botMember
     );
   }
+
+  await recordMasterAction(interaction, {
+    title: 'Server Messages Purged',
+    target: targetUser,
+    description: `${interaction.user.tag} purged ${deletedCount} message(s) from ${targetUser.tag ?? targetUser.username} across the server.`,
+    fields: [
+      { name: 'Deleted messages', value: String(deletedCount), inline: true },
+      { name: 'Requested count', value: String(count), inline: true },
+    ],
+  });
 
   await interaction.editReply({
     content: `Deleted ${deletedCount} message(s) from ${targetUser} across available channels. Messages older than 14 days are skipped by Discord bulk delete.`,
@@ -1785,6 +1954,17 @@ async function handleLockdown(interaction) {
     }
   }
 
+  await recordMasterAction(interaction, {
+    title: 'Server Lockdown Applied',
+    description: `${interaction.user.tag} ran a server lockdown.`,
+    fields: [
+      { name: 'Locked channels', value: String(lockedCount), inline: true },
+      { name: 'Skipped channels', value: String(skippedCount), inline: true },
+      { name: 'Failed channels', value: String(failedCount), inline: true },
+      { name: 'Reason', value: reason },
+    ],
+  });
+
   await interaction.editReply({
     content: `Lockdown complete. Locked ${lockedCount} channel(s), skipped ${skippedCount}, failed ${failedCount}. Non-admin members should no longer be able to view locked channels.`,
   });
@@ -1870,21 +2050,20 @@ async function handleJoinGuard(member) {
 client.once(Events.ClientReady, (readyClient) => {
   console.log(`Logged in as ${readyClient.user.tag}`);
   for (const guild of readyClient.guilds.cache.values()) {
-    refreshInviteCache(guild).catch((error) => console.error(`Could not cache invites for ${guild.id}`, error));
+    inviteTracker.warmGuild(guild).catch((error) => console.error(`Could not establish invite baseline for ${guild.id}`, error));
   }
 });
 
 client.on(Events.InviteCreate, (invite) => {
-  refreshInviteCache(invite.guild).catch((error) => console.error('Could not update invite cache', error));
+  inviteTracker.reportInviteCreate(invite).catch((error) => console.error('Invite-create tracking failed', error));
 });
 
 client.on(Events.InviteDelete, (invite) => {
-  // A one-use personal invite disappears as it is consumed. Keep the prior
-  // snapshot until the next join so that consumption can still be recognized.
+  inviteTracker.reportInviteDelete(invite).catch((error) => console.error('Invite-delete tracking failed', error));
 });
 
 client.on(Events.GuildCreate, (guild) => {
-  refreshInviteCache(guild).catch((error) => console.error(`Could not cache invites for ${guild.id}`, error));
+  inviteTracker.warmGuild(guild).catch((error) => console.error(`Could not establish invite baseline for ${guild.id}`, error));
 });
 
 client.on(Events.GuildMemberAdd, async (member) => {
@@ -1904,6 +2083,14 @@ client.on(Events.GuildMemberRemove, async (member) => {
   } catch (error) {
     console.error('Leave report failed', error);
   }
+});
+
+client.on(Events.GuildBanAdd, (ban) => {
+  inviteTracker.reportGuildBanAdd(ban).catch((error) => console.error('Invite-tracker ban report failed', error));
+});
+
+client.on(Events.GuildBanRemove, (ban) => {
+  inviteTracker.reportGuildBanRemove(ban).catch((error) => console.error('Invite-tracker unban report failed', error));
 });
 
 client.on(Events.GuildMemberUpdate, async (oldMember, newMember) => {
@@ -2081,6 +2268,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     if (commandName === 'honeypot') {
       await handleHoneypot(interaction);
+      return;
+    }
+
+    if (commandName === 'logs') {
+      await handleMasterLogs(interaction);
       return;
     }
 

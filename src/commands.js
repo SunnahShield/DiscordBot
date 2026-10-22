@@ -266,6 +266,9 @@ const inviteTrackerCommand = new SlashCommandBuilder()
   .addSubcommand((subcommand) =>
     subcommand.setName('test').setDescription('Show test buttons for every invite-tracker scenario')
   )
+  .addSubcommand((subcommand) =>
+    subcommand.setName('status').setDescription('Show invite-tracker readiness and permissions')
+  )
   .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
 
 const roleTagCommand = new SlashCommandBuilder()
@@ -318,15 +321,17 @@ const punishmentConfigCommand = new SlashCommandBuilder()
   .addSubcommand((subcommand) =>
     subcommand
       .setName('setup')
-      .setDescription('Configure one role-based punishment')
+      .setDescription('Configure any punishment; role is only needed for role punishments')
       .addStringOption((option) => option.setName('type').setDescription('Punishment to configure').setRequired(true).addChoices(
         { name: 'Grill', value: 'grill' },
         { name: 'Super Grill', value: 'sgrill' },
         { name: 'Jail', value: 'jail' },
-        { name: 'Naughty', value: 'naughty' }
+        { name: 'Naughty', value: 'naughty' },
+        { name: 'Deepfry', value: 'deepfry' },
+        { name: 'Timeout / Marinate', value: 'marinate' }
       ))
-      .addRoleOption((option) => option.setName('role').setDescription('Role applied by this punishment').setRequired(true))
-      .addChannelOption((option) => option.setName('announce_channel').setDescription('Where to post the punishment').setRequired(true).addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement))
+      .addRoleOption((option) => option.setName('role').setDescription('Role applied by Grill, Super Grill, Jail, or Naughty'))
+      .addChannelOption((option) => option.setName('announce_channel').setDescription('Optional channel where this punishment is announced').addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement))
       .addRoleOption((option) => option.setName('remove_role_1').setDescription('Optional role to remove while punished'))
       .addRoleOption((option) => option.setName('remove_role_2').setDescription('Optional role to remove while punished'))
       .addRoleOption((option) => option.setName('remove_role_3').setDescription('Optional role to remove while punished'))
@@ -334,6 +339,107 @@ const punishmentConfigCommand = new SlashCommandBuilder()
   )
   .addSubcommand((subcommand) => subcommand.setName('list').setDescription('Show this server\'s punishment configuration'))
   .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
+
+const masterLogsCommand = new SlashCommandBuilder()
+  .setName('logs')
+  .setDescription('Configure the complete server master log')
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName('setup')
+      .setDescription('Set the channel that receives every available server log')
+      .addChannelOption((option) =>
+        option
+          .setName('channel')
+          .setDescription('Master log destination')
+          .setRequired(true)
+          .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
+      )
+  )
+  .addSubcommand((subcommand) => subcommand.setName('status').setDescription('Show master-log configuration and permissions'))
+  .addSubcommand((subcommand) => subcommand.setName('test').setDescription('Send a master-log test embed'))
+  .addSubcommand((subcommand) => subcommand.setName('disable').setDescription('Disable master logging'))
+  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
+
+const genderLogsCommand = new SlashCommandBuilder()
+  .setName('genderlogs')
+  .setDescription('Configure the male and female log destinations')
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName('setup')
+      .setDescription('Set a gender-specific log destination')
+      .addStringOption((option) =>
+        option
+          .setName('gender')
+          .setDescription('Log system to configure')
+          .setRequired(true)
+          .addChoices(
+            { name: 'Male logs', value: 'male' },
+            { name: 'Female logs', value: 'female' }
+          )
+      )
+      .addChannelOption((option) =>
+        option
+          .setName('channel')
+          .setDescription('Destination for this gender log')
+          .setRequired(true)
+          .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
+      )
+  )
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName('disable')
+      .setDescription('Disable one gender-specific log destination')
+      .addStringOption((option) =>
+        option
+          .setName('gender')
+          .setDescription('Log system to disable')
+          .setRequired(true)
+          .addChoices(
+            { name: 'Male logs', value: 'male' },
+            { name: 'Female logs', value: 'female' }
+          )
+      )
+  )
+  .addSubcommand((subcommand) => subcommand.setName('status').setDescription('Show male and female log configuration'))
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName('test')
+      .setDescription('Send a gender-log test embed')
+      .addStringOption((option) =>
+        option
+          .setName('gender')
+          .setDescription('Log system to test')
+          .setRequired(true)
+          .addChoices(
+            { name: 'Male logs', value: 'male' },
+            { name: 'Female logs', value: 'female' }
+          )
+      )
+  )
+  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
+
+const genderSourceCommand = (gender) =>
+  new SlashCommandBuilder()
+    .setName(gender)
+    .setDescription(`Assign channels whose activity belongs in ${gender} logs`)
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('add')
+        .setDescription(`Route a channel, category, or voice channel to ${gender} logs`)
+        .addChannelOption((option) =>
+          option.setName('channel').setDescription('Channel or category to route').setRequired(true)
+        )
+    )
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName('remove')
+        .setDescription(`Stop routing a channel to ${gender} logs`)
+        .addChannelOption((option) =>
+          option.setName('channel').setDescription('Channel or category to remove').setRequired(true)
+        )
+    )
+    .addSubcommand((subcommand) => subcommand.setName('list').setDescription(`List ${gender}-routed channels`))
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
 
 const commands = [
   new SlashCommandBuilder()
@@ -384,6 +490,10 @@ const commands = [
   inviteTrackerCommand,
   roleTagCommand,
   punishmentConfigCommand,
+  masterLogsCommand,
+  genderLogsCommand,
+  genderSourceCommand('male'),
+  genderSourceCommand('female'),
   new SlashCommandBuilder()
     .setName('welcome-test')
     .setDescription('Send the configured welcome embed using your profile as the preview')
