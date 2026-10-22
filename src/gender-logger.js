@@ -69,7 +69,16 @@ function truncate(value, maximum) {
 }
 
 function cleanLogText(value, maximum = MAX_EMBED_FIELD) {
-  const text = String(value ?? '').replace(/@/g, '@\u200b').trim();
+  const roles = [];
+  const shielded = String(value ?? '').replace(/<@&(\d{17,20})>/g, (_match, id) => {
+    const token = `\u0000role-${roles.length}\u0000`;
+    roles.push(`<@&${id}>`);
+    return token;
+  });
+  const text = shielded
+    .replace(/@/g, '@\u200b')
+    .replace(/\u0000role-(\d+)\u0000/g, (_match, index) => roles[Number(index)] ?? '')
+    .trim();
   return truncate(text || 'None', maximum);
 }
 
