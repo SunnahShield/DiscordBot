@@ -903,32 +903,6 @@ async function logBulkDelete(messages, channel) {
   for (const message of messages.values()) removeSnapshot(message);
 }
 
-async function logReaction(action, reaction, user) {
-  const message = await hydrateMessage(reaction.message);
-  if (!message.guild || user?.id === message.client.user?.id) return;
-  await logMaster(message.guild, {
-    title: `Reaction ${action}`,
-    description: `${displayUser(user)} ${action.toLowerCase()} ${reaction.emoji} in ${channelMention(message.channelId)}.${message.url ? ` [Jump to message](${message.url})` : ''}`,
-    actor: user?.id,
-    channel: message.channelId,
-    fields: [
-      { name: 'Emoji', value: String(reaction.emoji), inline: true },
-      message.author ? { name: 'Message author', value: code(displayUser(message.author)), inline: true } : null,
-    ],
-  });
-}
-
-async function logReactionClear(reaction, emoji = null) {
-  const message = await hydrateMessage(reaction.message);
-  if (!message.guild) return;
-  await logMaster(message.guild, {
-    title: emoji ? 'Reaction Emoji Cleared' : 'Reactions Cleared',
-    description: `${emoji ? `${emoji} reactions were cleared` : 'All reactions were cleared'} in ${channelMention(message.channelId)}.${message.url ? ` [Jump to message](${message.url})` : ''}`,
-    channel: message.channelId,
-    fields: emoji ? [{ name: 'Emoji', value: String(emoji), inline: true }] : [],
-  });
-}
-
 function voiceFlags(oldState, newState) {
   const changes = [];
   const namedFlags = [
@@ -1203,10 +1177,6 @@ function attachMasterLogger(client) {
   onEvent(client, Events.MessageUpdate, logMessageUpdate);
   onEvent(client, Events.MessageDelete, logMessageDelete);
   onEvent(client, Events.MessageBulkDelete, logBulkDelete);
-  onEvent(client, Events.MessageReactionAdd, (reaction, user) => logReaction('Added', reaction, user));
-  onEvent(client, Events.MessageReactionRemove, (reaction, user) => logReaction('Removed', reaction, user));
-  onEvent(client, Events.MessageReactionRemoveAll, (message) => logReactionClear({ message }));
-  onEvent(client, Events.MessageReactionRemoveEmoji, (reaction) => logReactionClear(reaction, reaction.emoji));
   onEvent(client, Events.VoiceStateUpdate, logVoiceUpdate);
   onEvent(client, Events.GuildEmojiCreate, (emoji) => logEmoji('Created', emoji));
   onEvent(client, Events.GuildEmojiDelete, (emoji) => logEmoji('Deleted', emoji));
@@ -1217,55 +1187,10 @@ function attachMasterLogger(client) {
   onEvent(client, Events.GuildScheduledEventCreate, (event) => logScheduledEvent('Created', event));
   onEvent(client, Events.GuildScheduledEventDelete, (event) => logScheduledEvent('Deleted', event));
   onEvent(client, Events.GuildScheduledEventUpdate, (oldEvent, newEvent) => logScheduledEvent('Edited', oldEvent, newEvent));
-  onEvent(client, Events.GuildScheduledEventUserAdd, async (event, user) => {
-    await logMaster(event.guild, {
-      title: 'Scheduled Event User Added',
-      description: `${displayUser(user)} subscribed to ${event.name}.`,
-      actor: user?.id,
-      target: event.creatorId,
-      fields: [{ name: 'Event', value: code(event.name), inline: true }],
-    });
-  });
-  onEvent(client, Events.GuildScheduledEventUserRemove, async (event, user) => {
-    await logMaster(event.guild, {
-      title: 'Scheduled Event User Removed',
-      description: `${displayUser(user)} unsubscribed from ${event.name}.`,
-      actor: user?.id,
-      fields: [{ name: 'Event', value: code(event.name), inline: true }],
-    });
-  });
   onEvent(client, Events.StageInstanceCreate, (stage) => logStage('Created', stage));
   onEvent(client, Events.StageInstanceDelete, (stage) => logStage('Deleted', stage));
   onEvent(client, Events.StageInstanceUpdate, (oldStage, newStage) => logStage('Edited', oldStage, newStage));
   onEvent(client, Events.AutoModerationActionExecution, logAutoModeration);
-  onEvent(client, Events.InteractionCreate, async (interaction) => {
-    if (!interaction.guild) return;
-    if (interaction.isChatInputCommand?.()) {
-      const optionSummary = interaction.options?.data?.length
-        ? interaction.options.data.map((option) => option.name).join(', ')
-        : 'None';
-      await logMaster(interaction.guild, {
-        title: 'Slash Command Used',
-        description: `${displayUser(interaction.user)} used /${interaction.commandName} in ${channelMention(interaction.channelId)}.`,
-        actor: interaction.user?.id,
-        channel: interaction.channelId,
-        fields: [
-          { name: 'Command', value: code(`/${interaction.commandName}`), inline: true },
-          { name: 'Options supplied', value: code(optionSummary), inline: true },
-        ],
-      });
-      return;
-    }
-    if (interaction.isButton?.()) {
-      await logMaster(interaction.guild, {
-        title: 'Button Used',
-        description: `${displayUser(interaction.user)} used a server button in ${channelMention(interaction.channelId)}.`,
-        actor: interaction.user?.id,
-        channel: interaction.channelId,
-        fields: [{ name: 'Button ID', value: code(interaction.customId), inline: true }],
-      });
-    }
-  });
   onEvent(client, Events.GuildIntegrationsUpdate, async (guild) => {
     await logMaster(guild, { title: 'Server Integrations Updated', description: 'An integration was added, removed, or updated.', color: WARNING_COLOR });
   });
