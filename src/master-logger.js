@@ -814,18 +814,9 @@ async function logInviteDelete(invite) {
 
 async function logMessageCreate(message) {
   if (!message.guild || message.author?.id === message.client.user?.id) return;
+  // Keep a local copy solely for a later edit/delete/purge report. Ordinary
+  // messages are intentionally not emitted as log entries.
   snapshotFor(message);
-  await logMaster(message.guild, {
-    title: 'Message Sent',
-    description: `${displayUser(message.author)} sent a message in ${channelMention(message.channelId)}.${message.url ? ` [Jump to message](${message.url})` : ''}`,
-    actor: message.author?.id,
-    channel: message.channelId,
-    fields: [
-      { name: 'Author', value: code(displayUser(message.author)), inline: true },
-      message.content ? { name: 'Content', value: truncate(neutralizeMentions(message.content), 1_000) } : null,
-      attachmentSummary([...message.attachments.values()]) ? { name: 'Attachments', value: attachmentSummary([...message.attachments.values()]) } : null,
-    ],
-  });
 }
 
 async function logMessageUpdate(oldMessage, newMessage) {

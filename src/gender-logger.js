@@ -255,19 +255,9 @@ async function handleMessageCreate(message) {
   if (!message.guild || message.author?.bot) return;
   const gender = await getConfiguredGender(message.guild, message.channel);
   if (!gender) return;
+  // A snapshot makes later edit/delete logs useful without flooding the gender
+  // log with every ordinary message sent in the channel.
   cacheMessage(message);
-  await sendGenderLog(message.guild, gender, {
-    title: 'Message Sent',
-    userIds: message.author?.id,
-    channelIds: message.channelId,
-    fields: [
-      { name: 'Author', value: formatUser(message.author), inline: true },
-      { name: 'Channel', value: formatChannel(message.channel), inline: true },
-      message.content ? { name: 'Content', value: message.content } : null,
-      { name: 'Attachments', value: attachmentSummary([...message.attachments.values()]), inline: true },
-      { name: 'Message', value: message.url ?? 'Unavailable' },
-    ],
-  });
 }
 
 async function handleMessageUpdate(oldMessage, newMessage) {
